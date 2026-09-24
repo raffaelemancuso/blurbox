@@ -492,6 +492,42 @@ def test_drag_ends_a_range_edit(ranged):
     assert ranged.areas[0].ranges[1][1] == pytest.approx(2.6, abs=1.5 / FPS)
 
 
+def double_click_timeline(app, t, y=BAND_Y):
+    """A real double-click: two press/release pairs in quick succession,
+    which Tk turns into a <Double-Button-1> for the second press."""
+    tl = app.timeline
+    x = int(round(tl.x_of(t)))
+    for _ in range(2):
+        tl.event_generate("<ButtonPress-1>", x=x, y=y)
+        tl.event_generate("<ButtonRelease-1>", x=x, y=y)
+    pump(app)
+
+
+@pytest.mark.parametrize("t, index", [(1.5, 0), (2.65, 1), (2.0, 0), (2.5, 1)])
+def test_double_click_on_timeline_range_edits_it(ranged, t, index):
+    double_click_timeline(ranged, t)
+    assert ranged.editing == index
+    assert ranged.range_list.curselection() == (index,)
+    s, e = ranged.areas[0].ranges[index]
+    assert (ranged.start_text.get(), ranged.end_text.get()) == (bb.fmt_time(s), bb.fmt_time(e))
+    assert ranged.add_btn.cget("text") == "Update range"
+    assert ranged.cancel_edit_btn.winfo_ismapped()
+    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.8)]  # nothing moved
+
+
+def test_double_click_outside_ranges_does_not_edit(ranged):
+    double_click_timeline(ranged, 0.4)  # empty part of the ranges row
+    double_click_timeline(ranged, 1.5, y=11)  # the grey strip row
+    assert ranged.editing is None
+
+
+def test_double_click_then_update_from_timeline(ranged):
+    double_click_timeline(ranged, 2.65)
+    ranged.end_text.set("2.9")
+    ranged.add_range()
+    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.9)]
+
+
 @pytest.mark.parametrize("t, cursor", [
     (1.0, "sb_h_double_arrow"), (2.0, "sb_h_double_arrow"), (1.5, "fleur"), (0.4, ""),
 ])

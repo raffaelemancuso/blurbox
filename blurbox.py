@@ -20,10 +20,10 @@ Seeking: the timeline (click or drag), the step buttons (hold to repeat) or
 the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
 
 Ranges: I and O put the current time in Start and End, Enter adds the range;
-double-click a range to edit it, Esc cancels the edit. The timeline shows the
-selected area's ranges in red and the other areas' in grey; drag an edge of
-a red range to change that end (the video follows the edge), or its middle
-to move the whole range.
+double-click a range (in the list or on the timeline) to edit it, Esc
+cancels. The timeline shows the selected area's ranges in red and the other
+areas' in grey; drag an edge of a red range to change that end (the video
+follows the edge), or its middle to move the whole range.
 
 "Show effect" (E) draws every area's effect on the frame as it will be
 rendered, so only the areas active at that time are covered.
@@ -528,6 +528,7 @@ class Timeline(tk.Canvas):
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
         self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Double-Button-1>", self._double)
         self.bind("<Motion>", self._hover)
 
     def _span(self) -> tuple[int, int]:
@@ -619,6 +620,14 @@ class Timeline(tk.Canvas):
             return
         self.app.range_dragged(grab[0])
         self.app._scrub_end()
+
+    def _double(self, e):
+        """Double-click on a range: edit it, as a double-click in the list.
+        (Tk sends this instead of the second press, so the first click has
+        already seeked, as any click does.)"""
+        hit = self._range_at(e.x, e.y)
+        if hit:
+            self.app.edit_range(hit[0])
 
     def _seek_to(self, x: float):
         if self.app.info:
@@ -1419,12 +1428,19 @@ class App:
         self._refresh_areas()
         self.schedule_redraw()
 
-    def edit_range(self):
-        sel = self.range_list.curselection()
+    def edit_range(self, j: int | None = None):
+        """Start editing range `j` of the selected area (default: the one
+        selected in the list), also selecting it in the list."""
         a = self.current()
-        if not sel or not a:
+        if j is None:
+            sel = self.range_list.curselection()
+            j = sel[0] if sel else None
+        if j is None or not a or not 0 <= j < len(a.ranges):
             return
-        self.editing = sel[0]
+        self.range_list.selection_clear(0, "end")
+        self.range_list.selection_set(j)
+        self.range_list.see(j)
+        self.editing = j
         s, e = a.ranges[self.editing]
         self.start_text.set(fmt_time(s))
         self.end_text.set(fmt_time(e))
