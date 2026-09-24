@@ -30,9 +30,14 @@ shortcut stores absolute paths.
 ## Using it
 
 - **Areas**: drag on the frame to draw the selected area, drag inside any
-  area to select and move it, "New area" to add another. Each area has its
-  own effect, strength and time ranges; with no ranges it covers the whole
+  area to select and move it, drag an edge or corner of the selected area
+  (it shows white handles) to resize it, "New area" to add another. The
+  mouse cursor shows which of these a drag will do. Each area has its own
+  effect, strength and time ranges; with no ranges it covers the whole
   video.
+- **Whole frame**: tick it to make the selected area cover the entire
+  picture (e.g. blur everything from 0:12 to 0:15); untick it to get its
+  rectangle back.
 - **Seeking**: click or drag the timeline, use the step buttons (hold them
   to repeat), or the keys ←/→ (1 s) and Shift+←/→ (one frame).
 - **Time ranges**: I and O put the current time in Start and End, Enter adds

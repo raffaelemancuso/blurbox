@@ -12,8 +12,9 @@ Usage:
     uv run --script blurbox.py [video | project.json]
 
 Areas: drag on the frame to draw the selected area, drag inside any area to
-select and move it; "New area" adds another. Each area has its own effect
-and time ranges (none = the whole video).
+select and move it, drag an edge or corner of the selected area to resize
+it; "New area" adds another. Each area has its own effect and time ranges
+(none = the whole video).
 
 Seeking: the timeline (click or drag), the step buttons (hold to repeat) or
 the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
@@ -62,6 +63,15 @@ POLL_MS = 15  # how often the GUI picks up results from worker threads
 LOADING_MS = 80  # show "Loading…" if a frame takes longer than this
 REPEAT_DELAY_MS = 400  # hold a step button this long before it repeats
 REPEAT_MS = 50  # then step at most this often (and never before the frame shows)
+GRAB_PX = 7  # how close (screen pixels) to an edge of the selected area resizes it
+MIN_AREA_PX = 2  # smallest width/height (video pixels) a resize can leave
+# Mouse cursor per resize handle: l/r = left/right edge, t/b = top/bottom
+RESIZE_CURSORS = {
+    "l": "sb_h_double_arrow", "r": "sb_h_double_arrow",
+    "t": "sb_v_double_arrow", "b": "sb_v_double_arrow",
+    "lt": "top_left_corner", "rb": "bottom_right_corner",
+    "rt": "top_right_corner", "lb": "bottom_left_corner",
+}
 VIDEO_TYPES = [
     ("Video", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.wmv *.flv *.ts"),
     ("All files", "*.*"),
@@ -113,19 +123,23 @@ class Area:
     mode: str = "black"
     strength: int = 20
     ranges: list = field(default_factory=list)  # (start, end) s; empty = whole video
+    # Cover the entire frame; x/y/w/h are kept, so turning it off restores them
+    full: bool = False
 
     def active(self, t: float, pad: float) -> bool:
         return not self.ranges or any(s - pad <= t <= e + pad for s, e in self.ranges)
 
     def clipped(self, width: int, height: int) -> tuple[int, int, int, int] | None:
         """The rectangle clipped to the frame, or None if nothing is left."""
+        if self.full:
+            return 0, 0, width, height
         x, y = min(max(self.x, 0), width - 1), min(max(self.y, 0), height - 1)
         w, h = min(self.w, width - x), min(self.h, height - y)
         return (x, y, w, h) if w >= 2 and h >= 2 else None
 
     def to_json(self) -> dict:
-        return {"x": self.x, "y": self.y, "w": self.w, "h": self.h, "effect": self.mode,
-                "strength": self.strength,
+        return {"x": self.x, "y": self.y, "w": self.w, "h": self.h, "full": self.full,
+                "effect": self.mode, "strength": self.strength,
                 "ranges": [[round(s, 4), round(e, 4)] for s, e in self.ranges]}
 
     @classmethod
@@ -133,12 +147,16 @@ class Area:
         mode = d.get("effect", "black")
         return cls(int(d.get("x", 0)), int(d.get("y", 0)), int(d.get("w", 0)), int(d.get("h", 0)),
                    mode if mode in MODES else "black", max(1, int(d.get("strength", 20))),
-                   sorted((float(s), float(e)) for s, e in d.get("ranges", [])))
+                   sorted((float(s), float(e)) for s, e in d.get("ranges", [])),
+                   bool(d.get("full", False)))
 
     def label(self, i: int) -> str:
         eff = MODES[self.mode] + ("" if self.mode == "black" else f" {self.strength}")
         when = f"{len(self.ranges)} range{'s' * (len(self.ranges) != 1)}" if self.ranges else "whole video"
-        size = f"{self.w}×{self.h} at {self.x},{self.y}" if self.w and self.h else "not drawn yet"
+        if self.full:
+            size = "whole frame"
+        else:
+            size = f"{self.w}×{self.h} at {self.x},{self.y}" if self.w and self.h else "not drawn yet"
         return f"{i + 1}.  {eff},  {size},  {when}"
 
 
@@ -590,10 +608,11 @@ class App:
         self.start_text = tk.StringVar()
         self.end_text = tk.StringVar()
         self.show_effect = tk.BooleanVar(value=True)
+        self.full = tk.BooleanVar(value=False)  # selected area covers the whole frame
         self.status = tk.StringVar(value="Open a video to start.")
 
         self._build()
-        for v in (*self.rect_vars.values(), self.mode, self.strength):
+        for v in (*self.rect_vars.values(), self.mode, self.strength, self.full):
             v.trace_add("write", lambda *_: self._area_edited())
         self.show_effect.trace_add("write", lambda *_: self.schedule_redraw())
         self.pos.trace_add("write", lambda *_: self.timeline.draw_playhead())
@@ -625,6 +644,7 @@ class App:
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._motion)
         self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
+        self.canvas.bind("<Motion>", self._hover)
 
         seek = ttk.Frame(self.root)
         seek.pack(fill="x", **pad)
@@ -662,10 +682,13 @@ class App:
         ttk.Label(sel, text="Position (px)").grid(row=0, column=0, sticky="w", **pad)
         area = ttk.Frame(sel)
         area.grid(row=0, column=1, sticky="w")
+        self.rect_boxes = []
         for k in "xywh":
             ttk.Label(area, text=k).pack(side="left", padx=(8, 2))
-            ttk.Spinbox(area, from_=0, to=99999, width=6,
-                        textvariable=self.rect_vars[k]).pack(side="left")
+            box = ttk.Spinbox(area, from_=0, to=99999, width=6, textvariable=self.rect_vars[k])
+            box.pack(side="left")
+            self.rect_boxes.append(box)
+        ttk.Checkbutton(area, text="Whole frame", variable=self.full).pack(side="left", padx=(14, 0))
 
         ttk.Label(sel, text="Effect").grid(row=1, column=0, sticky="w", **pad)
         eff = ttk.Frame(sel)
@@ -1020,10 +1043,11 @@ class App:
         order += [self.cur] if self.cur is not None else []
         for i in order:  # selected area last, on top
             a = self.areas[i]
-            if a.w <= 0 or a.h <= 0:
+            if not a.full and (a.w <= 0 or a.h <= 0):
                 continue
-            c = [self.offx + a.x * self.scale, self.offy + a.y * self.scale,
-                 self.offx + (a.x + a.w) * self.scale, self.offy + (a.y + a.h) * self.scale]
+            x, y, w, h = (0, 0, self.info.width, self.info.height) if a.full else (a.x, a.y, a.w, a.h)
+            c = [self.offx + x * self.scale, self.offy + y * self.scale,
+                 self.offx + (x + w) * self.scale, self.offy + (y + h) * self.scale]
             color = "#ff3030" if i == self.cur else "#ffd000"
             # Thin outline and "off" when the area is not covering this frame
             # (Tk on Windows draws wide dashed lines as grey dots, so no dashes)
@@ -1038,6 +1062,12 @@ class App:
             tag = self.canvas.create_rectangle(box[0] - 3, box[1] - 1, box[2] + 3, box[3] + 1,
                                                fill="black", outline="", tags="rect")
             self.canvas.tag_lower(tag, label)
+            if i == self.cur and not a.full:  # resize handles: corners and edge midpoints
+                mx, my = (c[0] + c[2]) / 2, (c[1] + c[3]) / 2
+                for hx, hy in [(c[0], c[1]), (mx, c[1]), (c[2], c[1]), (c[2], my),
+                               (c[2], c[3]), (mx, c[3]), (c[0], c[3]), (c[0], my)]:
+                    self.canvas.create_rectangle(hx - 4, hy - 4, hx + 4, hy + 4, fill="white",
+                                                 outline="black", tags="rect")
 
     # Areas ----------------------------------------------------------------
 
@@ -1070,19 +1100,28 @@ class App:
         try:
             for k in "xywh":
                 self.rect_vars[k].set(str(getattr(a, k)) if a else "0")
+            self.full.set(bool(a and a.full))
             if a:
                 self.mode.set(a.mode)
                 self.strength.set(str(a.strength))
         finally:
             self.syncing = False
         self._mode_changed()
+        self._full_changed()
         self._refresh_ranges()
+
+    def _full_changed(self):
+        # A whole-frame area has no rectangle to type in
+        state = "disabled" if self.full.get() else "normal"
+        for box in self.rect_boxes:
+            box.config(state=state)
 
     def _area_edited(self):
         """A widget of the selected area changed: store it in the area."""
         if self.syncing or not self.info:
             return
         self._mode_changed()
+        self._full_changed()
         a = self.current(create=True)
         if a is None:
             return
@@ -1092,6 +1131,7 @@ class App:
             pass  # half-typed number: keep the last valid one
         a.mode = self.mode.get()
         a.strength = self._strength_or(a.strength)
+        a.full = self.full.get()
         self.area_list.delete(self.cur)
         self.area_list.insert(self.cur, a.label(self.cur))
         self.area_list.selection_set(self.cur)
@@ -1144,15 +1184,59 @@ class App:
         return min(max(vx, 0), self.info.width), min(max(vy, 0), self.info.height)
 
     def _area_at(self, vx, vy) -> int | None:
-        """The area under the point: the selected one first, then the top one."""
+        """The area under the point: the selected one first, then the top one.
+        Whole-frame areas are left out: they would catch every click."""
         def inside(a):
-            return a.w > 0 and a.h > 0 and a.x <= vx <= a.x + a.w and a.y <= vy <= a.y + a.h
+            return (not a.full and a.w > 0 and a.h > 0
+                    and a.x <= vx <= a.x + a.w and a.y <= vy <= a.y + a.h)
         if self.cur is not None and inside(self.areas[self.cur]):
             return self.cur
         return next((i for i in reversed(range(len(self.areas))) if inside(self.areas[i])), None)
 
+    def _handle_at(self, cx, cy) -> str | None:
+        """The resize handle of the selected area under a screen point: which
+        edges it moves, "l"/"r" then "t"/"b" (e.g. "rb" = bottom-right
+        corner), or None. Works anywhere along an edge, not only on the
+        drawn squares."""
+        a = self.current()
+        if self.frame is None or self.loading or not a or a.full or a.w <= 0 or a.h <= 0:
+            return None
+        left, top = self.offx + a.x * self.scale, self.offy + a.y * self.scale
+        right, bottom = left + a.w * self.scale, top + a.h * self.scale
+        in_x = left - GRAB_PX <= cx <= right + GRAB_PX
+        in_y = top - GRAB_PX <= cy <= bottom + GRAB_PX
+        handle = ""
+        # On a tiny area both edges are in reach: take the nearer one
+        dl, dr = abs(cx - left), abs(cx - right)
+        if in_y and min(dl, dr) <= GRAB_PX:
+            handle += "l" if dl < dr else "r"
+        dt, db = abs(cy - top), abs(cy - bottom)
+        if in_x and min(dt, db) <= GRAB_PX:
+            handle += "t" if dt < db else "b"
+        return handle or None
+
+    def _hover(self, e):
+        """Show with the cursor what a drag from here would do."""
+        if self.frame is None or self.loading:
+            cursor = ""
+        elif handle := self._handle_at(e.x, e.y):
+            cursor = RESIZE_CURSORS[handle]
+        elif self._area_at(*self._to_video(e.x, e.y)) is not None:
+            cursor = "fleur"
+        else:
+            cursor = "crosshair"
+        if self.canvas.cget("cursor") != cursor:
+            self.canvas.config(cursor=cursor)
+
     def _press(self, e):
         if self.frame is None or self.loading:
+            return
+        # An edge of the selected area resizes it, even where it overlaps
+        # another area
+        handle = self._handle_at(e.x, e.y)
+        if handle:
+            a = self.areas[self.cur]
+            self.drag = ("resize", handle, (a.x, a.y, a.x + a.w, a.y + a.h))
             return
         vx, vy = self._to_video(e.x, e.y)
         hit = self._area_at(vx, vy)
@@ -1162,19 +1246,34 @@ class App:
             a = self.areas[hit]
             self.drag = ("move", vx - a.x, vy - a.y)
         else:
-            self.current(create=True)
+            a = self.current(create=True)
+            if a.full:  # it has no rectangle to redraw: start a new area
+                self.new_area()
             self.drag = ("new", vx, vy)
 
     def _motion(self, e):
         if not self.drag or self.cur is None:
             return
-        vx, vy = self._to_video(e.x, e.y)
+        vx, vy = self._to_video(e.x, e.y)  # already clamped to the frame
         kind, a, b = self.drag
         if kind == "move":
             area = self.areas[self.cur]
             x = min(max(vx - a, 0), self.info.width - area.w)
             y = min(max(vy - b, 0), self.info.height - area.h)
             self.set_rect(x, y, area.w, area.h)
+        elif kind == "resize":
+            # Move only the grabbed edges; an edge stops short of the
+            # opposite one instead of flipping the area over
+            x0, y0, x1, y1 = b
+            if "l" in a:
+                x0 = min(vx, x1 - MIN_AREA_PX)
+            if "r" in a:
+                x1 = max(vx, x0 + MIN_AREA_PX)
+            if "t" in a:
+                y0 = min(vy, y1 - MIN_AREA_PX)
+            if "b" in a:
+                y1 = max(vy, y0 + MIN_AREA_PX)
+            self.set_rect(x0, y0, x1 - x0, y1 - y0)
         else:
             self.set_rect(min(a, vx), min(b, vy), abs(vx - a), abs(vy - b))
 

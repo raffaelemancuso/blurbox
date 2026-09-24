@@ -104,6 +104,7 @@ AREAS = [
     Area(180, 100, 100, 100, "pixelate", 10, []),
     Area(200, 20, 80, 50, "black", 20, [(0.5, 1.5)]),
     Area(60, 30, 100, 60, "black", 20, [(1.5, 1.6)]),  # overlaps area 1
+    Area(mode="pixelate", strength=8, ranges=[(2.4, 2.6)], full=True),
 ]
 # Frames right on every range edge, one frame either side, and in between
 TIMES = [0.2, 0.5 - 1 / FPS, 0.5, 1.0, 1.5, 1.5 + 1 / FPS, 1.6, 1.6 + 1 / FPS, 2.0,
@@ -121,12 +122,21 @@ def test_render_matches_live_preview(media, tmp_path, key):
     info = bb.probe(src)
     src_reader, out_reader = bb.FrameReader(src, info), bb.FrameReader(out, bb.probe(out))
     pad = 0.5 / info.fps
+    # Compared area by area, not over the whole frame, where untouched pixels
+    # would dilute a mistake. Measured: a correct preview differs by at most
+    # ~3.5/255 inside an area (colour rounding), an area wrongly on or off by
+    # at least ~18/255
     try:
         for t in TIMES:
             raw, ft = src_reader.get(t)
             items = [(a, a.clipped(info.width, info.height)) for a in AREAS if a.active(ft, pad)]
+            preview = bb.apply_effects(raw, items)
             rendered, _ = out_reader.get(t)
-            assert mean_diff(bb.apply_effects(raw, items), rendered) < 1.0, f"t={ft:.4f}"
+            for i, a in enumerate(AREAS):
+                x, y, w, h = a.clipped(info.width, info.height)
+                box = (x, y, x + w, y + h)
+                assert mean_diff(preview.crop(box), rendered.crop(box)) < 8, \
+                    f"t={ft:.4f}, area {i + 1}"
     finally:
         src_reader.close()
         out_reader.close()

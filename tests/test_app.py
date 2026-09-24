@@ -164,6 +164,136 @@ def test_duplicate_and_delete(app):
     assert app.areas == [] and app.cur is None
 
 
+def to_canvas(app, x, y):
+    return int(app.offx + x * app.scale), int(app.offy + y * app.scale)
+
+
+def drag_canvas(app, start, end):
+    """Drag between two points given in canvas pixels."""
+    app.canvas.event_generate("<ButtonPress-1>", x=start[0], y=start[1])
+    app.canvas.event_generate("<B1-Motion>", x=end[0], y=end[1])
+    app.canvas.event_generate("<ButtonRelease-1>", x=end[0], y=end[1])
+    pump(app)
+
+
+def rect(app, i=None):
+    a = app.areas[app.cur if i is None else i]
+    return a.x, a.y, a.w, a.h
+
+
+@pytest.fixture
+def drawn(app):
+    """An app with one selected area at (100, 60), 80×60."""
+    app.new_area()
+    app.set_rect(100, 60, 80, 60)
+    pump(app)
+    return app
+
+
+@pytest.mark.parametrize("grab, to, expected", [
+    ((180, 120), (220, 150), (100, 60, 120, 90)),   # bottom-right corner
+    ((100, 60), (70, 40), (70, 40, 110, 80)),       # top-left corner
+    ((180, 60), (200, 30), (100, 30, 100, 90)),     # top-right corner
+    ((100, 120), (90, 160), (90, 60, 90, 100)),     # bottom-left corner
+    ((180, 90), (230, 10), (100, 60, 130, 60)),     # right edge: height untouched
+    ((140, 60), (10, 20), (100, 20, 80, 100)),      # top edge: width untouched
+    ((100, 90), (60, 90), (60, 60, 120, 60)),       # left edge, grabbed mid-edge
+])
+def test_resize_by_dragging_edges_and_corners(drawn, grab, to, expected):
+    drag_canvas(drawn, to_canvas(drawn, *grab), to_canvas(drawn, *to))
+    assert rect(drawn) == pytest.approx(expected, abs=2)
+    assert len(drawn.areas) == 1  # resizing never creates an area
+
+
+def test_resize_stops_before_flipping_and_at_the_frame(drawn):
+    # Right edge dragged far past the left edge: stops at the minimum width
+    drag_canvas(drawn, to_canvas(drawn, 180, 90), to_canvas(drawn, 20, 90))
+    x, y, w, h = rect(drawn)
+    assert (x, w) == (100, bb.MIN_AREA_PX)
+    # Bottom edge dragged beyond the picture: clamped to the frame
+    drag_canvas(drawn, to_canvas(drawn, 101, 120), (to_canvas(drawn, 101, 120)[0], 5000))
+    assert rect(drawn)[1] + rect(drawn)[3] == drawn.info.height
+
+
+def test_resize_updates_the_position_fields(drawn):
+    drag_canvas(drawn, to_canvas(drawn, 180, 120), to_canvas(drawn, 200, 140))
+    assert (drawn.rect_vars["w"].get(), drawn.rect_vars["h"].get()) == \
+        (str(rect(drawn)[2]), str(rect(drawn)[3]))
+
+
+def test_inside_still_moves_and_outside_still_draws(drawn):
+    drag_canvas(drawn, to_canvas(drawn, 140, 90), to_canvas(drawn, 150, 100))  # centre: move
+    assert rect(drawn) == pytest.approx((110, 70, 80, 60), abs=2)
+    drag_canvas(drawn, to_canvas(drawn, 250, 180), to_canvas(drawn, 300, 220))  # empty: redraw
+    assert rect(drawn) == pytest.approx((250, 180, 50, 40), abs=2)
+
+
+@pytest.mark.parametrize("point, cursor", [
+    ((180, 120), "bottom_right_corner"), ((100, 60), "top_left_corner"),
+    ((180, 60), "top_right_corner"), ((100, 120), "bottom_left_corner"),
+    ((180, 90), "sb_h_double_arrow"), ((140, 60), "sb_v_double_arrow"),
+    ((140, 90), "fleur"), ((250, 200), "crosshair"),
+])
+def test_cursor_shows_what_a_drag_will_do(drawn, point, cursor):
+    x, y = to_canvas(drawn, *point)
+    drawn.canvas.event_generate("<Motion>", x=x, y=y)
+    pump(drawn)
+    assert drawn.canvas.cget("cursor") == cursor
+
+
+def test_only_the_selected_area_has_resize_handles(drawn):
+    drawn.new_area()
+    drawn.set_rect(200, 150, 60, 60)
+    pump(drawn)
+    # the old area's corner now just selects and moves it, it does not resize
+    drag_canvas(drawn, to_canvas(drawn, 179, 119), to_canvas(drawn, 189, 129))
+    assert drawn.cur == 0 and rect(drawn)[2:] == (80, 60)
+
+
+# Whole frame ----------------------------------------------------------------
+
+def test_whole_frame_toggle_keeps_the_rectangle(drawn):
+    drawn.full.set(True)
+    a = drawn.areas[0]
+    assert a.full and a.clipped(drawn.info.width, drawn.info.height) == (0, 0, 320, 240)
+    assert all(str(b.cget("state")) == "disabled" for b in drawn.rect_boxes)
+    assert "whole frame" in drawn.area_list.get(0)
+    drawn.full.set(False)
+    assert rect(drawn) == (100, 60, 80, 60)
+    assert all(str(b.cget("state")) == "normal" for b in drawn.rect_boxes)
+
+
+def test_whole_frame_area_has_no_handles_and_ignores_clicks(drawn):
+    drawn.full.set(True)
+    pump(drawn)
+    x, y = to_canvas(drawn, 180, 120)  # where the corner handle was
+    drawn.canvas.event_generate("<Motion>", x=x, y=y)
+    pump(drawn)
+    assert drawn.canvas.cget("cursor") == "crosshair"
+    # dragging now draws a new area instead of touching the whole-frame one
+    drag_canvas(drawn, to_canvas(drawn, 20, 20), to_canvas(drawn, 60, 50))
+    assert len(drawn.areas) == 2 and drawn.cur == 1
+    assert drawn.areas[0].full and rect(drawn, 0) == (100, 60, 80, 60)
+    assert rect(drawn) == pytest.approx((20, 20, 40, 30), abs=2)
+    assert not drawn.full.get()  # the widgets now show the new area
+
+
+def test_whole_frame_selection_follows_the_area(drawn):
+    drawn.full.set(True)
+    drawn.new_area()
+    assert not drawn.full.get()
+    drawn.select_area(0)
+    assert drawn.full.get()
+
+
+def test_whole_frame_area_renders_without_drawing(app, dialogs):
+    app.new_area()
+    app.full.set(True)  # never drawn, yet valid
+    dialogs["save_as"] = None  # cancel at the file dialog: validation passed
+    app.render()
+    assert dialogs["errors"] == []
+
+
 # Ranges ---------------------------------------------------------------------
 
 def test_mark_keys_and_enter_add_a_range(app):

@@ -100,6 +100,32 @@ def test_area_from_json_sanitises():
     assert a.ranges == [(1.0, 2.0), (9.0, 10.0)]  # sorted
 
 
+def test_whole_frame_area_covers_the_frame_and_keeps_its_rectangle():
+    a = Area(10, 20, 30, 40, full=True)
+    assert a.clipped(1920, 1080) == (0, 0, 1920, 1080)
+    assert Area(full=True).clipped(640, 480) == (0, 0, 640, 480)  # never drawn: still fine
+    a.full = False
+    assert a.clipped(1920, 1080) == (10, 20, 30, 40)
+
+
+def test_whole_frame_survives_json():
+    a = Area(10, 20, 30, 40, "blur", 5, [(1, 2)], full=True)
+    d = a.to_json()
+    assert d["full"] is True
+    b = Area.from_json(d)
+    assert b.full and (b.x, b.y, b.w, b.h) == (10, 20, 30, 40)
+    assert Area.from_json({"x": 1}).full is False  # missing key: a rectangle
+
+
+def test_whole_frame_filter():
+    fg = bb.build_filter([(Area(mode="blur", strength=4, full=True), (0, 0, 1920, 1080))], info())
+    assert "crop=1920:1080:0:0,gblur=sigma=4" in fg and "overlay=0:0" in fg
+
+
+def test_area_label_whole_frame():
+    assert Area(full=True, ranges=[(1, 2)]).label(0) == "1.  Black box,  whole frame,  1 range"
+
+
 def test_area_label():
     assert Area(200, 100, 400, 150, "blur", 25, [(1, 2), (3, 4)]).label(0) == \
         "1.  Blur 25,  400×150 at 200,100,  2 ranges"
