@@ -1,18 +1,48 @@
 [project]
 name = "blurbox"
 version = "0.1.0"
-description = "GUI to cover areas of a video (black box, blur, pixelate) with ffmpeg"
+description = "Cover areas of a video with a black box, blur or pixelation: a desktop GUI around ffmpeg"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Raffaele Mancuso" }]
 requires-python = ">=3.11"
 # Keep in sync with the inline metadata at the top of blurbox.py,
 # which `uv run --script` and the Windows shortcut use
 dependencies = ["av>=18", "pillow>=10"]
+keywords = ["video", "ffmpeg", "blur", "pixelate", "redact", "anonymize", "gui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Video :: Conversion",
+]
+
+# A GUI entry point: on Windows it starts without a console window
+[project.gui-scripts]
+blurbox = "blurbox:main"
+
+[build-system]
+requires = ["hatchling>=1.32"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["blurbox.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["blurbox.py", "tests", "README.md", "LICENSE", "pyproject.toml"]
 
 [dependency-groups]
-dev = ["pytest>=9.1"]
-
-[tool.uv]
-package = false
+dev = ["pytest>=9.1", "twine>=7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

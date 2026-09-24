@@ -7,15 +7,35 @@ runs on Windows and Linux.
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/), which installs the Python dependencies
-  (PyAV, Pillow) on first run
-- ffmpeg and ffprobe on `PATH`; a full build is recommended, so the encoders
-  used to keep the source codec (libx265, libsvtav1, libvpx-vp9, libopus)
-  are available
+- Python 3.11 or newer
+- ffmpeg and ffprobe on `PATH` (they are separate programs, not installed
+  with blurbox); a full build is recommended, so the encoders used to keep
+  the source codec (libx265, libsvtav1, libvpx-vp9, libopus) are available.
+  On Windows, e.g. the "full" build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/);
+  on Linux, your distribution's `ffmpeg` package
 - Tk: included with Python on Windows; on Linux `pacman -S tk` (Arch) or
   `apt install python3-tk` (Debian/Ubuntu)
 
-## Running
+## Installing
+
+With [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/), which
+put the `blurbox` command on your `PATH` in an environment of its own:
+
+```sh
+uv tool install blurbox
+# or
+pipx install blurbox
+```
+
+Then start it, optionally with a video or a project file to open:
+
+```sh
+blurbox [video | project.json]
+```
+
+On Windows the command starts without a console window.
+
+## Running from a source checkout
 
 ```sh
 uv run --script blurbox.py [video | project.json]
