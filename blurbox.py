@@ -20,10 +20,11 @@ Seeking: the timeline (click or drag), the step buttons (hold to repeat) or
 the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
 
 Ranges: I and O put the current time in Start and End, Enter adds the range;
-double-click a range (in the list or on the timeline) to edit it, Esc
-cancels. The timeline shows the selected area's ranges in red and the other
-areas' in grey; drag an edge of a red range to change that end (the video
-follows the edge), or its middle to move the whole range.
+double-click a range (in the list or on the timeline) to edit it. The
+timeline shows the selected area's ranges in red and the other areas' in
+grey; while a range is edited, drag its edges on the timeline to change
+them (the video follows the edge) or its middle to move it. Update range
+(Enter) applies the edit, Cancel (Esc) discards it.
 
 "Show effect" (E) draws every area's effect on the frame as it will be
 rendered, so only the areas active at that time are covered.
@@ -42,6 +43,8 @@ import functools
 import json
 import os
 import queue
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -243,6 +246,34 @@ def available_encoders() -> frozenset[str]:
         if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in "VAS":
             names.add(parts[1])
     return frozenset(names)
+
+
+@functools.cache
+def ffmpeg_version() -> str:
+    """ffmpeg's version line, e.g. "ffmpeg version 9.0.2-full_build-..."."""
+    res = subprocess.run([FFMPEG, "-hide_banner", "-version"], capture_output=True, text=True,
+                         creationflags=NO_WINDOW)
+    # The line goes on with " Copyright (c) 2000-... the FFmpeg developers"
+    return (res.stdout.splitlines() or ["unknown"])[0].split(" Copyright")[0].strip()
+
+
+# Characters that need no quoting in either shell
+_PLAIN_ARG = re.compile(r"[A-Za-z0-9_\-.:/\\=+,@%]+")
+
+
+def shell_command(cmd: list[str], windows: bool = sys.platform == "win32") -> str:
+    """`cmd` as text to paste into a terminal: PowerShell syntax on Windows
+    (filtergraphs hold ; and ' that PowerShell would otherwise act on),
+    POSIX shell syntax elsewhere."""
+    if not windows:
+        return shlex.join(cmd)
+
+    def quote(arg: str) -> str:
+        # Single quotes are literal in PowerShell; a ' inside is doubled
+        return arg if _PLAIN_ARG.fullmatch(arg) else "'" + arg.replace("'", "''") + "'"
+
+    # The call operator & runs a program named by a (quoted) path
+    return "& " + " ".join(quote(a) for a in cmd)
 
 
 def effect_chain(mode: str, w: int, h: int, strength: int, full_range: bool) -> list[tuple[str, str]]:
@@ -509,8 +540,10 @@ class FrameWorker(threading.Thread):
 
 class Timeline(tk.Canvas):
     """Seek bar that also shows the time ranges: the selected area's in red,
-    the other areas' as a thin grey strip. Click or drag to seek; drag an
-    edge of a red range to change that end, or its middle to move it."""
+    the other areas' as a thin grey strip. Click or drag to seek. Double-
+    click a red range to edit it; while it is being edited, drag its edges
+    or middle to change the Start/End of the edit (Update range applies
+    them, Cancel discards them)."""
 
     HEIGHT, MARGIN = 34, 8
     BAND_TOP, BAND_BOTTOM = 15, 26  # the selected area's ranges
@@ -542,22 +575,29 @@ class Timeline(tk.Canvas):
         a, b = self._span()
         return (x - a) / (b - a) * self.app.info.duration
 
-    def _range_at(self, x: float, y: float) -> tuple[int, str] | None:
+    def _range_at(self, x: float, y: float, any_range: bool = False) -> tuple[int, str] | None:
         """The selected area's range under a point, and which part: its
-        "start" or "end" edge, or its middle ("move"). Edges win, so a short
-        range can still be stretched."""
-        cur = self.app.current() if self.app.info else None
+        "start" or "end" edge, or its middle ("move"). Only the range being
+        edited counts, unless `any_range`. Edges win, so a short range can
+        still be stretched."""
+        app = self.app
+        cur = app.current() if app.info else None
         if not cur or not cur.ranges or not self.BAND_TOP - 3 <= y <= self.BAND_BOTTOM + 3:
             return None
+        if any_range:
+            shown = list(enumerate(cur.ranges))
+        elif app.editing is not None:
+            shown = [(app.editing, app.pending_range())]
+        else:
+            return None
         edges = []
-        for j, (s, e) in enumerate(cur.ranges):
+        for j, (s, e) in shown:
             xs, xe = self.x_of(s), max(self.x_of(e), self.x_of(s) + 2)
             edges += [(abs(x - xs), j, "start"), (abs(x - xe), j, "end")]
         dist, j, part = min(edges)
         if dist <= self.EDGE_PX:
             return j, part
-        return next(((j, "move") for j, (s, e) in enumerate(cur.ranges)
-                     if self.x_of(s) < x < self.x_of(e)), None)
+        return next(((j, "move") for j, (s, e) in shown if self.x_of(s) < x < self.x_of(e)), None)
 
     def _hover(self, e):
         hit = self._range_at(e.x, e.y)
@@ -571,7 +611,7 @@ class Timeline(tk.Canvas):
         hit = self._range_at(e.x, e.y)
         if hit:
             j, part = hit
-            self.grab = (j, part, e.x, self.app.current().ranges[j])
+            self.grab = (j, part, e.x, self.app.pending_range())
             self.dragging = False
             return
         self.app.scrubbing = True
@@ -586,7 +626,6 @@ class Timeline(tk.Canvas):
             if abs(e.x - x0) < self.DRAG_PX:
                 return
             self.dragging = True
-            self.app.cancel_edit()  # dragging is itself the edit
             self.app.scrubbing = True
         info = self.app.info
         frame = 1 / info.fps
@@ -602,7 +641,8 @@ class Timeline(tk.Canvas):
         else:  # keep the length, stay inside the video
             s = min(max(snap(s0 + dt), 0.0), info.duration - (e0 - s0))
             en = s + (e0 - s0)
-        self.app.current().ranges[j] = (s, en)
+        # The drag edits Start/End, like typing them: Update range applies
+        self.app.set_pending_range(s, en)
         self.redraw()
         # Show the frame at the edge being dragged, to place it precisely
         self.app.seek(en if part == "end" else s)
@@ -618,14 +658,16 @@ class Timeline(tk.Canvas):
             self._seek_to(e.x)
             self.app._scrub_end()
             return
-        self.app.range_dragged(grab[0])
+        s, en = self.app.pending_range()
+        self.app.status.set(f"Range {grab[0] + 1} → {fmt_time(s)} – {fmt_time(en)}: "
+                            f"Update range (Enter) applies it, Cancel (Esc) discards it.")
         self.app._scrub_end()
 
     def _double(self, e):
         """Double-click on a range: edit it, as a double-click in the list.
         (Tk sends this instead of the second press, so the first click has
         already seeked, as any click does.)"""
-        hit = self._range_at(e.x, e.y)
+        hit = self._range_at(e.x, e.y, any_range=True)
         if hit:
             self.app.edit_range(hit[0])
 
@@ -647,9 +689,10 @@ class Timeline(tk.Canvas):
                                           fill="#8c8c8c", width=0)
         cur = app.current()
         if cur:
-            dragged = self.grab[0] if self.dragging else None
             for j, (s, e) in enumerate(cur.ranges or [(0, app.info.duration)]):
-                editing = cur.ranges and j in (app.editing, dragged)
+                editing = cur.ranges and j == app.editing
+                if editing:  # show the edit in progress, not the saved range
+                    s, e = app.pending_range()
                 self.create_rectangle(self.x_of(s), 15, max(self.x_of(e), self.x_of(s) + 2), 26,
                                       fill="#f2b8ad" if not cur.ranges else "#e0503c",
                                       outline="#1060d0" if editing else "", width=2 if editing else 0)
@@ -662,6 +705,128 @@ class Timeline(tk.Canvas):
         x = self.x_of(self.app.pos.get())
         self.create_line(x, 4, x, 31, fill="#101010", width=2, tags="ph")
         self.create_polygon(x - 5, 2, x + 5, 2, x, 8, fill="#101010", tags="ph")
+
+
+class FfmpegWindow(tk.Toplevel):
+    """What blurbox runs: the ffmpeg in use and its encoders, the decoder
+    behind the preview, and the exact command Render would run for the
+    current areas, ready to copy."""
+
+    ENCODERS = [
+        ("libx264", "H.264 video (also the fallback)"), ("libx265", "HEVC video"),
+        ("libsvtav1", "AV1 video"), ("libvpx-vp9", "VP9 video"),
+        ("aac", "AAC audio"), ("alac", "ALAC audio, lossless"), ("libopus", "Opus audio (WebM)"),
+        ("mov_text", "MP4/MOV subtitles"), ("webvtt", "WebM subtitles"),
+    ]
+    CONTAINERS = [".mp4", ".mkv", ".mov", ".webm"]
+
+    def __init__(self, app: "App"):
+        super().__init__(app.root)
+        self.app = app
+        self.title("ffmpeg")
+        self.geometry("960x680")
+        self.transient(app.root)
+        self.command = ""  # the render command as shell text, for Copy
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=6, pady=6)
+        ttk.Label(bar, text="Output container").pack(side="left")
+        default = app.default_output().suffix if app.video else ".mp4"
+        self.suffix = tk.StringVar(value=".mp4" if default == ".m4v" else default)
+        box = ttk.Combobox(bar, textvariable=self.suffix, values=self.CONTAINERS, width=7,
+                           state="readonly")
+        box.pack(side="left", padx=(4, 12))
+        box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Button(bar, text="Refresh", command=self.refresh).pack(side="left")
+        self.copy_btn = ttk.Button(bar, text="Copy command", command=self.copy)
+        self.copy_btn.pack(side="left", padx=4)
+        self.note = ttk.Label(bar, text="")
+        self.note.pack(side="left", padx=8)
+        ttk.Button(bar, text="Close", command=self.destroy).pack(side="right")
+
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self.text = tk.Text(body, wrap="word", font="TkFixedFont", padx=8, pady=6)
+        scroll = ttk.Scrollbar(body, command=self.text.yview)
+        self.text.config(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.text.tag_config("head", font=("TkDefaultFont", 10, "bold"))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.refresh()
+
+    def refresh(self):
+        app, info = self.app, self.app.info
+        parts: list[tuple[str, str]] = []  # (text, tag)
+
+        def head(title):
+            parts.append((title + "\n", "head"))
+
+        def line(s=""):
+            parts.append((s + "\n", ""))
+
+        head("ffmpeg (used to render)")
+        line(f"  program   {FFMPEG}")
+        line(f"  ffprobe   {FFPROBE}")
+        line(f"  version   {ffmpeg_version()}")
+        line()
+        head("Encoders blurbox can use")
+        enc = available_encoders()
+        for name, what in self.ENCODERS:
+            line(f"  {'yes' if name in enc else 'NO '}  {name:<11} {what}")
+        line()
+        head("Preview decoding")
+        line(f"  PyAV {av.__version__} with its own built-in FFmpeg "
+             f"{getattr(av, 'ffmpeg_version_info', '?')}: decodes the frames you see and runs")
+        line("  the preview's blur/pixelate filters. Renders always use the ffmpeg above.")
+        line()
+        if info:
+            head("Source")
+            line(f"  file      {app.video}")
+            line(f"  video     {info.codec}, {info.pix_fmt}, {info.width}×{info.height}, "
+                 f"{info.fps:.3f} fps, {fmt_time(info.duration)}")
+            if info.rotation:
+                line(f"  rotation  {info.rotation}° (applied, so frames are {info.width}×{info.height})")
+            if info.color:
+                line("  colour    " + ", ".join(f"{k.lstrip('-')}={v}" for k, v in info.color.items()))
+            line(f"  audio     {', '.join(info.audio) or 'none'}")
+            line(f"  subtitles {', '.join(info.subtitles) or 'none'}")
+            line()
+
+        head("Render command")
+        self.command = ""
+        try:
+            if not app.video:
+                raise ValueError("Open a video first.")
+            out = app.default_output(self.suffix.get())
+            cmd, notes = app.render_command(out)
+            self.command = shell_command(cmd)
+            line(f"  Exactly what Render runs for the current areas, writing to the default file")
+            line(f"  (Render asks where to save; the command then uses the file you choose):")
+            line(f"  {out}")
+            line("  -progress pipe:1 -nostats feed the progress bar; without them ffmpeg prints")
+            line("  its usual status line instead.")
+            for n in notes:
+                line(f"  • {n}")
+            line()
+            shell = "PowerShell" if sys.platform == "win32" else "shell"
+            head(f"As {shell} text (Copy command copies this)")
+            line(self.command)
+        except ValueError as e:
+            line(f"  Not ready: {e}")
+
+        self.text.config(state="normal")
+        self.text.delete("1.0", "end")
+        for s, tag in parts:
+            self.text.insert("end", s, tag or ())
+        self.text.config(state="disabled")
+        self.copy_btn.config(state="normal" if self.command else "disabled")
+        self.note.config(text="")
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.command)
+        self.note.config(text="Copied.")
 
 
 class App:
@@ -714,6 +879,9 @@ class App:
             v.trace_add("write", lambda *_: self._area_edited())
         self.show_effect.trace_add("write", lambda *_: self.schedule_redraw())
         self.pos.trace_add("write", lambda *_: self.timeline.draw_playhead())
+        # While a range is edited, the timeline shows Start/End as they change
+        for v in (self.start_text, self.end_text):
+            v.trace_add("write", lambda *_: self.editing is not None and self.timeline.redraw())
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.poll_after = root.after(POLL_MS, self._poll)
         if path and path.lower().endswith(".json"):
@@ -832,6 +1000,7 @@ class App:
         self.render_btn.pack(side="left", padx=(12, 4))
         self.cancel_btn = ttk.Button(act, text="Cancel", command=self.cancel, state="disabled")
         self.cancel_btn.pack(side="left")
+        ttk.Button(act, text="ffmpeg…", command=self.show_ffmpeg).pack(side="left", padx=(4, 0))
         self.progress = ttk.Progressbar(act, maximum=100, length=200)
         self.progress.pack(side="left", padx=8)
         ttk.Label(act, textvariable=self.status).pack(side="left", fill="x", expand=True)
@@ -1476,20 +1645,22 @@ class App:
         if hasattr(self, "timeline"):
             self.timeline.redraw()
 
-    def range_dragged(self, j: int):
-        """A range was changed on the timeline: keep the list sorted and
-        leave the dragged range selected."""
-        a = self.current()
-        moved = a.ranges[j]
-        a.ranges.sort()
-        self._refresh_areas()
-        new = a.ranges.index(moved)
-        self.range_list.selection_clear(0, "end")
-        self.range_list.selection_set(new)
-        self.range_list.see(new)
-        s, e = moved
-        self.status.set(f"Range {new + 1}: {fmt_time(s)} → {fmt_time(e)}")
-        self.schedule_redraw()
+    def pending_range(self) -> tuple[float, float] | None:
+        """The range being edited as Start/End now say (typed or dragged on
+        the timeline), or its saved value while they do not parse."""
+        if self.editing is None:
+            return None
+        try:
+            s, e = parse_time(self.start_text.get()), parse_time(self.end_text.get())
+            if s < e:
+                return s, min(e, self.info.duration)
+        except ValueError:
+            pass
+        return self.current().ranges[self.editing]
+
+    def set_pending_range(self, s: float, e: float):
+        self.start_text.set(fmt_time(s))
+        self.end_text.set(fmt_time(e))
 
     def _range_selected(self, _):
         sel = self.range_list.curselection()
@@ -1499,27 +1670,58 @@ class App:
 
     # Render ---------------------------------------------------------------
 
-    def render(self):
+    def show_ffmpeg(self):
+        """Open the ffmpeg window, or bring it forward up to date."""
+        win = getattr(self, "ffmpeg_window", None)
+        if win is not None and win.winfo_exists():
+            win.refresh()
+            win.lift()
+        else:
+            self.ffmpeg_window = FfmpegWindow(self)
+
+    def check_renderable(self):
+        """Raise ValueError, with a message for the user, if the current
+        areas and settings cannot be rendered."""
         if not self.info:
-            return
+            raise ValueError("Open a video first.")
         empty = [str(i + 1) for i, a in enumerate(self.areas)
                  if not a.clipped(self.info.width, self.info.height)]
-        if not self.areas or empty:
-            messagebox.showerror("Cannot render",
-                                 f"Area {', '.join(empty)} has not been drawn: draw or delete it."
-                                 if empty else "Draw an area to cover first.")
-            return
+        if empty:
+            raise ValueError(f"Area {', '.join(empty)} has not been drawn: draw or delete it.")
+        if not self.areas:
+            raise ValueError("Draw an area to cover first.")
         try:
-            crf = int(self.crf.get())
+            int(self.crf.get())
         except ValueError:
-            messagebox.showerror("Cannot render", "The quality (CRF) must be a whole number.")
+            raise ValueError("The quality (CRF) must be a whole number.") from None
+
+    def default_output(self, suffix: str | None = None) -> Path:
+        """Where the render goes by default: next to the video, as
+        <name>_covered, in the same container when blurbox can write it."""
+        if suffix is None:
+            suffix = self.video.suffix.lower()
+            suffix = suffix if suffix in (".mp4", ".mkv", ".mov", ".webm", ".m4v") else ".mp4"
+        return self.video.parent / f"{self.video.stem}_covered{suffix}"
+
+    def render_command(self, out: Path) -> tuple[list[str], list[str]]:
+        """The ffmpeg command Render runs to write `out`, and the notes on
+        what gets converted or left out. Raises ValueError like
+        check_renderable. The ffmpeg window shows exactly this."""
+        self.check_renderable()
+        items = [(a, a.clipped(self.info.width, self.info.height)) for a in self.areas]
+        stream_args, notes = plan_streams(self.info, out, int(self.crf.get()))
+        return build_render_cmd(self.video, out, build_filter(items, self.info), stream_args), notes
+
+    def render(self):
+        try:
+            self.check_renderable()
+        except ValueError as e:
+            messagebox.showerror("Cannot render", str(e))
             return
-        suffix = self.video.suffix.lower()
-        suffix = suffix if suffix in (".mp4", ".mkv", ".mov", ".webm", ".m4v") else ".mp4"
+        default = self.default_output()
         out = filedialog.asksaveasfilename(
             title="Save covered video as", initialdir=self.video.parent,
-            initialfile=f"{self.video.stem}_covered{suffix}", defaultextension=suffix,
-            filetypes=OUTPUT_TYPES)
+            initialfile=default.name, defaultextension=default.suffix, filetypes=OUTPUT_TYPES)
         if not out:
             return
         out = Path(out)
@@ -1527,13 +1729,11 @@ class App:
             messagebox.showerror("Cannot render", "Choose a file other than the input video.")
             return
 
-        items = [(a, a.clipped(self.info.width, self.info.height)) for a in self.areas]
-        stream_args, notes = plan_streams(self.info, out, crf)
+        cmd, notes = self.render_command(out)
         if notes and not messagebox.askokcancel(
                 "Render", "About this output:\n\n" + "\n".join(f"• {n}" for n in notes)
                 + "\n\nRender anyway?"):
             return
-        cmd = build_render_cmd(self.video, out, build_filter(items, self.info), stream_args)
         self.cancelled = False
         self.progress["value"] = 0
         self.status.set("Rendering…")

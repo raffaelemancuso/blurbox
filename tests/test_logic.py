@@ -315,6 +315,23 @@ def test_render_cmd_shape():
     assert value_after(cmd, "-map") == "[v]" and value_after(cmd, "-progress") == "pipe:1"
 
 
+TRICKY = ["C:\\Program Files\\ffmpeg.exe", "-i", "my clip.mp4", "-filter_complex",
+          "[0:v]split[b][s];[b][s]overlay=0:0:enable='between(t,1,2)'[v]", "-crf", "18"]
+
+
+def test_shell_command_posix_round_trips():
+    import shlex
+    assert shlex.split(bb.shell_command(TRICKY, windows=False)) == TRICKY
+
+
+def test_shell_command_powershell_quoting():
+    text = bb.shell_command(TRICKY, windows=True)
+    assert text.startswith("& 'C:\\Program Files\\ffmpeg.exe' -i 'my clip.mp4' ")
+    # ; and ' would break an unquoted PowerShell line: quoted, ' doubled
+    assert "'[0:v]split[b][s];[b][s]overlay=0:0:enable=''between(t,1,2)''[v]'" in text
+    assert text.endswith(" -crf 18")  # plain arguments stay bare
+
+
 def test_available_encoders_parses_ffmpeg_listing(monkeypatch):
     listing = """Encoders:
  V..... = Video

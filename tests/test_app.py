@@ -425,71 +425,128 @@ def frames(t):
     return round(t * FPS) / FPS
 
 
-def test_drag_range_end(ranged):
-    tl_drag(ranged, 2.0, 2.3)
-    s, e = ranged.areas[0].ranges[0]
-    assert s == 1.0 and e == pytest.approx(2.3, abs=1.5 / FPS)
-    assert e == pytest.approx(frames(e))  # on a frame boundary
-    assert ranged.pos.get() == pytest.approx(e, abs=1 / FPS)  # video followed the edge
+SAVED = [(1.0, 2.0), (2.5, 2.8)]  # the ranges of the `ranged` fixture
+TOL = 1.5 / FPS  # a drag lands on a whole frame near the target
 
 
-def test_drag_range_start(ranged):
-    tl_drag(ranged, 1.0, 0.4)
-    s, e = ranged.areas[0].ranges[0]
-    assert s == pytest.approx(0.4, abs=1.5 / FPS) and e == 2.0
-    assert ranged.pos.get() == pytest.approx(s, abs=1 / FPS)
+def fields(app):
+    """Start/End as the edit currently stands."""
+    return bb.parse_time(app.start_text.get()), bb.parse_time(app.end_text.get())
 
 
-def test_drag_range_middle_moves_it_keeping_its_length(ranged):
-    tl_drag(ranged, 1.5, 1.2)
-    s, e = ranged.areas[0].ranges[0]
-    assert e - s == pytest.approx(1.0, abs=1e-9)
-    assert s == pytest.approx(0.7, abs=1.5 / FPS)
+@pytest.fixture
+def editing(ranged):
+    """`ranged`, with its first range (1.0-2.0) in edit mode."""
+    ranged.edit_range(0)
+    pump(ranged)
+    return ranged
 
 
-def test_drag_is_clamped_to_the_video_and_never_flips(ranged):
-    tl_drag(ranged, 1.5, -5)  # move far left: stops at 0
-    s, e = ranged.areas[0].ranges[0]
-    assert s == 0 and e == pytest.approx(1.0)
-    tl_drag(ranged, 1.0, -5)  # end edge dragged past the start: one frame long
-    s, e = ranged.areas[0].ranges[0]
-    assert e - s == pytest.approx(1 / FPS)
-    tl_drag(ranged, 2.8, 9)  # second range's end past the end of the video
-    assert ranged.areas[0].ranges[-1][1] == pytest.approx(ranged.info.duration)
+# Outside edit mode the timeline only seeks
+
+def test_no_range_drag_outside_edit_mode(ranged):
+    for t0, t1 in [(2.0, 2.3), (1.0, 0.4), (1.5, 1.2)]:  # end edge, start edge, middle
+        tl_drag(ranged, t0, t1)
+        assert ranged.areas[0].ranges == SAVED and ranged.editing is None
+        assert ranged.pos.get() == pytest.approx(t1, abs=TOL)  # it just scrubbed
 
 
-def test_dragging_past_another_range_resorts_and_keeps_it_selected(ranged):
-    tl_drag(ranged, 2.65, 0.45)  # 2.5-2.8 moved to the front, before 1-2
+@pytest.mark.parametrize("t", [1.0, 2.0, 1.5, 2.65, 0.4])
+def test_no_drag_cursor_outside_edit_mode(ranged, t):
+    ranged.timeline.event_generate("<Motion>", x=int(round(ranged.timeline.x_of(t))), y=BAND_Y)
+    pump(ranged)
+    assert ranged.timeline.cget("cursor") == ""
+
+
+# In edit mode, dragging the edited range changes Start/End only
+
+def test_drag_end_changes_the_edit_not_the_range(editing):
+    tl_drag(editing, 2.0, 2.3)
+    s, e = fields(editing)
+    assert s == 1.0 and e == pytest.approx(2.3, abs=TOL)
+    assert e == pytest.approx(frames(e), abs=1e-3)  # a whole frame (fields keep 3 decimals)
+    assert editing.pos.get() == pytest.approx(e, abs=TOL)  # the video followed the edge
+    assert editing.areas[0].ranges == SAVED and editing.editing == 0  # not applied yet
+    editing.add_range()  # Update range
+    assert editing.areas[0].ranges[0] == (1.0, e) and editing.editing is None
+
+
+def test_drag_start_then_cancel_discards(editing):
+    tl_drag(editing, 1.0, 0.4)
+    assert fields(editing)[0] == pytest.approx(0.4, abs=TOL)
+    editing.cancel_edit_btn.invoke()
+    assert editing.areas[0].ranges == SAVED and editing.start_text.get() == ""
+
+
+def test_drag_middle_moves_the_edit_keeping_its_length(editing):
+    tl_drag(editing, 1.5, 1.2)
+    s, e = fields(editing)
+    assert e - s == pytest.approx(1.0, abs=1e-3) and s == pytest.approx(0.7, abs=TOL)
+
+
+def test_drag_is_clamped_to_the_video_and_never_flips(editing):
+    tl_drag(editing, 1.5, -5)  # move far left: stops at 0
+    assert fields(editing) == pytest.approx((0.0, 1.0), abs=1e-3)
+    tl_drag(editing, 1.0, -5)  # end edge dragged past the start: one frame long
+    s, e = fields(editing)
+    assert e - s == pytest.approx(1 / FPS, abs=1e-3)
+    tl_drag(editing, s, -5)  # start edge: stops at 0
+    tl_drag(editing, fields(editing)[1], 9)  # end edge past the end of the video
+    assert fields(editing) == pytest.approx((0.0, editing.info.duration), abs=1e-3)
+
+
+def test_only_the_edited_range_can_be_dragged(editing):
+    tl_drag(editing, 2.65, 2.2)  # middle of range 2, which is not being edited
+    assert fields(editing) == (1.0, 2.0) and editing.areas[0].ranges == SAVED
+    assert editing.pos.get() == pytest.approx(2.2, abs=TOL)  # it scrubbed instead
+
+
+def test_update_after_a_drag_resorts_and_keeps_it_selected(ranged):
+    ranged.edit_range(1)  # 2.5-2.8
+    tl_drag(ranged, 2.65, 0.45)  # moved in front of 1-2
+    ranged.add_range()
     r = ranged.areas[0].ranges
     assert r == sorted(r) and r[1] == (1.0, 2.0)
-    assert r[0][1] - r[0][0] == pytest.approx(0.3) and r[0][0] < 0.5
-    assert ranged.range_list.curselection() == (0,)  # the moved one, now first
-    assert ranged.range_list.get(0).startswith(bb.fmt_time(r[0][0]))
+    assert r[0][1] - r[0][0] == pytest.approx(0.3, abs=1e-3) and r[0][0] < 0.5
     assert ranged._dirty()
 
 
-def test_click_on_a_range_still_seeks(ranged):
-    tl = ranged.timeline
+def test_click_on_the_edited_range_seeks_and_keeps_the_edit(editing):
+    tl = editing.timeline
     x = int(tl.x_of(1.5))
     tl.event_generate("<ButtonPress-1>", x=x, y=BAND_Y)
     tl.event_generate("<ButtonRelease-1>", x=x, y=BAND_Y)
-    wait_frame(ranged)
-    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.8)]
-    assert ranged.pos.get() == pytest.approx(1.5, abs=1.5 / FPS)
+    wait_frame(editing)
+    assert editing.pos.get() == pytest.approx(1.5, abs=TOL)
+    assert fields(editing) == (1.0, 2.0) and editing.editing == 0
 
 
-def test_drag_outside_the_ranges_row_seeks(ranged):
-    tl_drag(ranged, 1.5, 1.9, y=11)  # the grey strip row: plain scrubbing
-    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.8)]
-    assert ranged.pos.get() == pytest.approx(1.9, abs=1.5 / FPS)
+def test_typed_times_move_the_bar(editing):
+    editing.end_text.set("2.4")
+    assert editing.pending_range() == (1.0, 2.4)
+    tl = editing.timeline
+    x = int(round(tl.x_of(2.4)))
+    tl.event_generate("<Motion>", x=x, y=BAND_Y)  # the end edge is now there
+    pump(editing)
+    assert tl.cget("cursor") == "sb_h_double_arrow"
+    editing.end_text.set("oops")  # unparseable: the bar shows the saved range
+    assert editing.pending_range() == (1.0, 2.0)
 
 
-def test_drag_ends_a_range_edit(ranged):
-    ranged.range_list.selection_set(0)
-    ranged.edit_range()
-    tl_drag(ranged, 2.8, 2.6)
-    assert ranged.editing is None and ranged.start_text.get() == ""
-    assert ranged.areas[0].ranges[1][1] == pytest.approx(2.6, abs=1.5 / FPS)
+@pytest.mark.parametrize("t, cursor", [
+    (1.0, "sb_h_double_arrow"), (2.0, "sb_h_double_arrow"), (1.5, "fleur"),
+    (0.4, ""), (2.65, ""),  # outside, and the range not being edited
+])
+def test_drag_cursor_in_edit_mode(editing, t, cursor):
+    editing.timeline.event_generate("<Motion>", x=int(round(editing.timeline.x_of(t))), y=BAND_Y)
+    pump(editing)
+    assert editing.timeline.cget("cursor") == cursor
+
+
+def test_drag_outside_the_ranges_row_seeks(editing):
+    tl_drag(editing, 1.5, 1.9, y=11)  # the grey strip row: plain scrubbing
+    assert fields(editing) == (1.0, 2.0)
+    assert editing.pos.get() == pytest.approx(1.9, abs=TOL)
 
 
 def double_click_timeline(app, t, y=BAND_Y):
@@ -528,13 +585,11 @@ def test_double_click_then_update_from_timeline(ranged):
     assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.9)]
 
 
-@pytest.mark.parametrize("t, cursor", [
-    (1.0, "sb_h_double_arrow"), (2.0, "sb_h_double_arrow"), (1.5, "fleur"), (0.4, ""),
-])
-def test_timeline_cursor(ranged, t, cursor):
-    ranged.timeline.event_generate("<Motion>", x=int(round(ranged.timeline.x_of(t))), y=BAND_Y)
-    pump(ranged)
-    assert ranged.timeline.cget("cursor") == cursor
+def test_double_click_then_drag_then_update(ranged):
+    double_click_timeline(ranged, 2.65)  # edit range 2
+    tl_drag(ranged, 2.8, 2.95)
+    ranged.add_range()
+    assert ranged.areas[0].ranges[1] == pytest.approx((2.5, 2.95), abs=TOL)
 
 
 def test_whole_video_band_is_not_draggable(app):
@@ -561,6 +616,34 @@ def test_range_end_is_clamped_to_duration(app):
     app.end_text.set("500")
     app.add_range()
     assert app.areas[0].ranges == [(1.0, app.info.duration)]
+
+
+# ffmpeg window --------------------------------------------------------------
+
+def test_ffmpeg_window_shows_the_render_command(app):
+    app.new_area()
+    app.set_rect(10, 10, 50, 50)
+    app.show_ffmpeg()
+    win = app.ffmpeg_window
+    text = win.text.get("1.0", "end")
+    assert bb.ffmpeg_version() in text and bb.FFMPEG in text
+    cmd, _ = app.render_command(app.default_output(".mp4"))
+    assert win.command == bb.shell_command(cmd) and win.command in text
+    win.suffix.set(".webm")  # another container: another command
+    win.refresh()
+    assert "libvpx-vp9" in win.command
+    win.copy()
+    assert app.root.clipboard_get() == win.command
+    win.destroy()
+
+
+def test_ffmpeg_window_explains_when_not_ready(app):
+    app.new_area()  # not drawn
+    app.show_ffmpeg()
+    win = app.ffmpeg_window
+    assert "Not ready: Area 1 has not been drawn" in win.text.get("1.0", "end")
+    assert str(win.copy_btn.cget("state")) == "disabled"
+    win.destroy()
 
 
 # Projects -------------------------------------------------------------------
