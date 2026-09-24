@@ -1,0 +1,23 @@
+[project]
+name = "video-cover-region"
+version = "0.1.0"
+description = "GUI to cover areas of a video (black box, blur, pixelate) with ffmpeg"
+readme = "README.md"
+requires-python = ">=3.11"
+# Keep in sync with the inline metadata at the top of video_cover_region.py,
+# which `uv run --script` and the Windows shortcut use
+dependencies = ["av>=18", "pillow>=10"]
+
+[dependency-groups]
+dev = ["pytest>=9.1"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "media: needs ffmpeg/ffprobe on PATH to build and render test videos",
+    "gui: needs a Tk display",
+]

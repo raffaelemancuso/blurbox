@@ -54,3 +54,27 @@ possible) or left out, and a dialog lists it before rendering starts.
 The quality setting is x264/x265-style CRF: lower means better and larger.
 The same number looks better with HEVC than with H.264, so 22–24 is usually
 enough for HEVC sources.
+
+## Development
+
+```sh
+uv sync            # creates .venv with the dependencies and pytest
+uv run pytest      # the test suite, about 20 s
+```
+
+`pyproject.toml` repeats the dependencies of the script's inline metadata
+(which `uv run --script` and the shortcut use); keep the two in sync.
+
+The tests are in three files:
+
+- `tests/test_logic.py`: time parsing, areas, filtergraphs and the stream
+  plan, with no ffmpeg run
+- `tests/test_media.py`: builds small videos with ffmpeg once per session,
+  then checks probing, frame reading against a plain sequential decode, the
+  live preview against the real render frame by frame, 10-bit and HDR
+  preservation, and the streams in rendered files
+- `tests/test_app.py`: drives the GUI through real Tk events (areas, ranges,
+  keys, seeking, projects); needs a display
+
+Tests that need ffmpeg or a display are skipped when these are missing;
+`-m "not gui"` or `-m "not media"` deselects them explicitly.

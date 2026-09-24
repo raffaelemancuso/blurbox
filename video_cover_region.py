@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["av>=18", "pillow>=10"]
 # ///
 """Cover fixed areas of a video with a black box, a blur or pixelation, each
@@ -143,7 +143,8 @@ class Area:
 
 
 def fmt_time(t: float) -> str:
-    h, rem = divmod(t, 3600)
+    # Round first, so 59.9999 becomes 0:01:00.000 rather than 0:00:60.000
+    h, rem = divmod(round(t, 3), 3600)
     m, s = divmod(rem, 60)
     return f"{int(h)}:{int(m):02d}:{s:06.3f}"
 
@@ -214,8 +215,10 @@ def probe(path: Path) -> VideoInfo:
 def available_encoders() -> frozenset[str]:
     res = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True,
                          creationflags=NO_WINDOW)
+    # The encoder list follows a legend (" V..... = Video") and a "------" line
+    _, _, listing = res.stdout.partition("------")
     names = set()
-    for line in res.stdout.splitlines():
+    for line in listing.splitlines():
         parts = line.split()
         if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in "VAS":
             names.add(parts[1])
