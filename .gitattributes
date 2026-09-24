@@ -1,0 +1,14 @@
+# LF everywhere, on Windows too
+* text=auto eol=lf
+*.py    text eol=lf
+*.ps1   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+# Binary
+*.lnk   binary
+*.png   binary
+*.mp4   binary
+*.mkv   binary
+*.mov   binary
+*.webm  binary
