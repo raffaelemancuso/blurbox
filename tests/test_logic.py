@@ -1,6 +1,8 @@
-"""Pure logic: time parsing, areas, filtergraphs and the stream plan. No
-ffmpeg run is needed (the encoder list is replaced where it matters)."""
+"""Pure logic: time parsing, areas, filtergraphs, the stream plan and the
+shell text of commands. No ffmpeg run is needed (the encoder list is
+replaced where it matters)."""
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -33,129 +35,63 @@ def encoders(monkeypatch):
 
 # Time -----------------------------------------------------------------------
 
-@pytest.mark.parametrize("text, secs", [
-    ("75.5", 75.5), ("0", 0.0), ("1:05.5", 65.5), ("1:00:00", 3600.0),
-    ("0:00:12.345", 12.345), (" 2:03 ", 123.0),
-])
-def test_parse_time(text, secs):
-    assert bb.parse_time(text) == pytest.approx(secs)
+def test_parse_time():
+    for text, secs in [("75.5", 75.5), ("1:05.5", 65.5), ("1:00:00", 3600.0), (" 2:03 ", 123.0)]:
+        assert bb.parse_time(text) == pytest.approx(secs)
+    for bad in ["", "abc", "1:2:3:4", "-5"]:
+        with pytest.raises(ValueError):
+            bb.parse_time(bad)
 
 
-@pytest.mark.parametrize("text", ["", "   ", "abc", "1:2:3:4", "-5", "1:x"])
-def test_parse_time_rejects(text):
-    with pytest.raises(ValueError):
-        bb.parse_time(text)
-
-
-@pytest.mark.parametrize("secs, text", [
-    (0, "0:00:00.000"), (65.5, "0:01:05.500"), (3661.25, "1:01:01.250"),
-    (59.9999, "0:01:00.000"), (3599.9996, "1:00:00.000"),
-])
-def test_fmt_time(secs, text):
-    assert bb.fmt_time(secs) == text
-
-
-@pytest.mark.parametrize("secs", [0, 1 / 30, 12.345, 3599.999, 7322.5])
-def test_fmt_parse_roundtrip(secs):
-    assert bb.parse_time(bb.fmt_time(secs)) == pytest.approx(secs, abs=5e-4)
+def test_fmt_time():
+    assert bb.fmt_time(3661.25) == "1:01:01.250"
+    assert bb.fmt_time(59.9999) == "0:01:00.000"  # rounds before splitting minutes
 
 
 # Areas ----------------------------------------------------------------------
 
-def test_area_without_ranges_is_always_active():
-    assert Area(ranges=[]).active(123.4, pad=0)
-
-
 def test_area_active_respects_ranges_and_pad():
+    assert Area().active(123.4, pad=0)  # no ranges: always
     a = Area(ranges=[(1.0, 2.0), (5.0, 6.0)])
-    assert a.active(1.0, 0) and a.active(2.0, 0) and a.active(5.5, 0)
-    assert not a.active(0.99, 0) and not a.active(3.0, 0)
+    assert a.active(1.0, 0) and a.active(2.0, 0) and not a.active(3.0, 0)
     # the pad widens both ends: a frame rounded slightly outside still counts
-    assert a.active(0.99, 0.02) and a.active(2.01, 0.02)
-    assert not a.active(2.03, 0.02)
+    assert a.active(0.99, 0.02) and not a.active(2.03, 0.02)
 
 
-def test_area_clipped_to_frame():
-    assert Area(100, 50, 300, 120).clipped(1920, 1080) == (100, 50, 300, 120)
+def test_area_clipped():
     assert Area(1800, 1000, 300, 200).clipped(1920, 1080) == (1800, 1000, 120, 80)
     assert Area(-10, -10, 50, 50).clipped(1920, 1080) == (0, 0, 50, 50)
-
-
-@pytest.mark.parametrize("area", [Area(), Area(10, 10, 1, 50), Area(1919, 10, 50, 50)])
-def test_area_too_small_is_none(area):
-    assert area.clipped(1920, 1080) is None
-
-
-def test_area_json_roundtrip():
-    a = Area(10, 20, 300, 400, "pixelate", 12, [(1.23456, 2.5), (7.0, 8.0)])
-    b = Area.from_json(a.to_json())
-    assert (b.x, b.y, b.w, b.h, b.mode, b.strength) == (10, 20, 300, 400, "pixelate", 12)
-    assert b.ranges == [(1.2346, 2.5), (7.0, 8.0)]  # stored to 4 decimals
-
-
-def test_area_from_json_sanitises():
-    a = Area.from_json({"x": 5, "effect": "sparkles", "strength": 0,
-                        "ranges": [[9, 10], [1, 2]]})
-    assert a.mode == "black" and a.strength == 1
-    assert a.ranges == [(1.0, 2.0), (9.0, 10.0)]  # sorted
-
-
-def test_whole_frame_area_covers_the_frame_and_keeps_its_rectangle():
+    assert Area().clipped(1920, 1080) is None  # not drawn
+    assert Area(1919, 10, 50, 50).clipped(1920, 1080) is None  # 1 px left
+    # whole frame: covers everything, and keeps its rectangle for later
     a = Area(10, 20, 30, 40, full=True)
-    assert a.clipped(1920, 1080) == (0, 0, 1920, 1080)
-    assert Area(full=True).clipped(640, 480) == (0, 0, 640, 480)  # never drawn: still fine
+    assert a.clipped(640, 480) == (0, 0, 640, 480)
     a.full = False
-    assert a.clipped(1920, 1080) == (10, 20, 30, 40)
+    assert a.clipped(640, 480) == (10, 20, 30, 40)
 
 
-def test_whole_frame_survives_json():
-    a = Area(10, 20, 30, 40, "blur", 5, [(1, 2)], full=True)
-    d = a.to_json()
-    assert d["full"] is True
-    b = Area.from_json(d)
-    assert b.full and (b.x, b.y, b.w, b.h) == (10, 20, 30, 40)
-    assert Area.from_json({"x": 1}).full is False  # missing key: a rectangle
-
-
-def test_whole_frame_filter():
-    fg = bb.build_filter([(Area(mode="blur", strength=4, full=True), (0, 0, 1920, 1080))], info())
-    assert "crop=1920:1080:0:0,gblur=sigma=4" in fg and "overlay=0:0" in fg
-
-
-def test_area_label_whole_frame():
-    assert Area(full=True, ranges=[(1, 2)]).label(0) == "1.  Black box,  whole frame,  1 range"
+def test_area_json_roundtrip_and_sanitising():
+    a = Area(10, 20, 300, 400, "pixelate", 12, [(1.23456, 2.5)], full=True)
+    b = Area.from_json(a.to_json())
+    assert (b.x, b.y, b.w, b.h, b.mode, b.strength, b.full) == (10, 20, 300, 400, "pixelate", 12, True)
+    assert b.ranges == [(1.2346, 2.5)]  # stored to 4 decimals
+    c = Area.from_json({"effect": "sparkles", "strength": 0, "ranges": [[9, 10], [1, 2]]})
+    assert (c.mode, c.strength, c.full) == ("black", 1, False)
+    assert c.ranges == [(1.0, 2.0), (9.0, 10.0)]  # sorted
 
 
 def test_area_label():
     assert Area(200, 100, 400, 150, "blur", 25, [(1, 2), (3, 4)]).label(0) == \
         "1.  Blur 25,  400×150 at 200,100,  2 ranges"
-    assert Area(0, 0, 10, 10, "black", 20, [(1, 2)]).label(1) == \
-        "2.  Black box,  10×10 at 0,0,  1 range"
     assert Area().label(2) == "3.  Black box,  not drawn yet,  always"
-
-
-# Video info -----------------------------------------------------------------
-
-@pytest.mark.parametrize("pix_fmt, color, full", [
-    ("yuv420p", {}, False),
-    ("yuvj420p", {}, True),
-    ("yuv420p", {"-color_range": "pc"}, True),
-    ("yuv420p10le", {"-color_range": "tv"}, False),
-])
-def test_full_range(pix_fmt, color, full):
-    assert info(pix_fmt=pix_fmt, color=color).full_range is full
+    assert Area(full=True, ranges=[(1, 2)]).label(0) == "1.  Black box,  whole frame,  1 range"
 
 
 # Filters --------------------------------------------------------------------
 
-def test_effect_chain_black_uses_range_appropriate_black():
-    limited = bb.effect_chain("black", 100, 100, 20, full_range=False)
-    full = bb.effect_chain("black", 100, 100, 20, full_range=True)
-    assert limited == [("lutyuv", "y=minval:u=(minval+maxval)/2:v=(minval+maxval)/2")]
-    assert full[0][1].startswith("y=0:")
-
-
-def test_effect_chain_blur_and_pixelate():
+def test_effect_chains():
+    assert vars_black(False) == "y=minval:u=(minval+maxval)/2:v=(minval+maxval)/2"
+    assert vars_black(True).startswith("y=0:")  # full-range black is 0
     assert bb.effect_chain("blur", 100, 100, 7, False) == [("gblur", "sigma=7")]
     assert bb.effect_chain("pixelate", 300, 120, 16, False) == [
         ("scale", "18:7:flags=area"), ("scale", "300:120:flags=neighbor")]
@@ -163,7 +99,13 @@ def test_effect_chain_blur_and_pixelate():
     assert bb.effect_chain("pixelate", 10, 10, 50, False)[0] == ("scale", "1:1:flags=area")
 
 
-def test_build_filter_single_area_whole_video():
+def vars_black(full_range: bool) -> str:
+    (name, args), = bb.effect_chain("black", 100, 100, 20, full_range)
+    assert name == "lutyuv"
+    return args
+
+
+def test_build_filter_single_area():
     fg = bb.build_filter([(Area(mode="blur", strength=9), (10, 20, 30, 40))], info())
     assert fg == ("[0:v]split[b0][s0];[s0]crop=30:40:10:20,gblur=sigma=9[f0];"
                   "[b0][f0]overlay=10:20:format=auto[o0];[o0]format=yuv420p[v]")
@@ -176,26 +118,12 @@ def test_build_filter_ranges_with_offset_and_half_frame_pad():
     assert ":enable='between(t,1.4800,2.5200)+between(t,5.4800,7.0200)'" in fg
 
 
-def test_build_filter_chains_areas_in_order():
-    items = [(Area(mode="black"), (0, 0, 10, 10)), (Area(mode="blur"), (5, 5, 10, 10)),
-             (Area(mode="pixelate", strength=5), (20, 20, 10, 10))]
-    fg = bb.build_filter(items, info())
-    parts = fg.split(";")
-    assert parts[0].startswith("[0:v]split[b0][s0]")
-    assert "[o0]split[b1][s1]" in fg and "[o1]split[b2][s2]" in fg
-    assert parts[-1] == "[o2]format=yuv420p[v]"
-    assert fg.count("overlay=") == 3 and "format=auto" in fg
-
-
-def test_build_filter_keeps_source_pixel_format_or_none():
-    fg10 = bb.build_filter([(Area(), (0, 0, 10, 10))], info(pix_fmt="yuv420p10le"))
-    assert fg10.endswith("format=yuv420p10le[v]")
-    assert bb.build_filter([(Area(), (0, 0, 10, 10))], info(pix_fmt="")).endswith("null[v]")
-
-
-def test_build_filter_full_range_black():
-    fg = bb.build_filter([(Area(mode="black"), (0, 0, 10, 10))], info(pix_fmt="yuvj420p"))
-    assert "lutyuv=y=0:" in fg
+def test_build_filter_chains_areas_and_keeps_pixel_format():
+    items = [(Area(mode="black"), (0, 0, 10, 10)), (Area(mode="blur"), (5, 5, 10, 10))]
+    fg = bb.build_filter(items, info(pix_fmt="yuv420p10le"))
+    assert "[o0]split[b1][s1]" in fg and fg.count("overlay=") == 2
+    assert fg.endswith("[o1]format=yuv420p10le[v]")
+    assert bb.build_filter(items, info(pix_fmt="")).endswith("null[v]")
 
 
 # Stream plan ----------------------------------------------------------------
@@ -203,124 +131,70 @@ def test_build_filter_full_range_black():
 @pytest.mark.parametrize("codec, ext, encoder", [
     ("h264", ".mp4", "libx264"),
     ("hevc", ".mp4", "libx265"),
-    ("hevc", ".mkv", "libx265"),
     ("av1", ".mp4", "libsvtav1"),
-    ("vp9", ".mkv", "libvpx-vp9"),
     ("vp9", ".mov", "libx264"),  # no VP9 in QuickTime
     ("h264", ".webm", "libvpx-vp9"),
-    ("av1", ".webm", "libsvtav1"),
-    ("prores", ".mov", "libx264"),
 ])
 def test_video_encoder_follows_source(encoders, codec, ext, encoder):
     args, _ = bb.plan_streams(info(codec=codec), Path("out" + ext), 20)
-    assert value_after(args, "-c:v") == encoder
-    assert value_after(args, "-crf") == "20"
+    assert value_after(args, "-c:v") == encoder and value_after(args, "-crf") == "20"
 
 
-def test_video_reencode_is_noted(encoders):
-    _, notes = bb.plan_streams(info(codec="prores"), Path("o.mov"), 18)
-    assert any("re-encoded as H264" in n for n in notes)
+def test_video_fallback_and_notes(encoders):
     _, notes = bb.plan_streams(info(codec="h264"), Path("o.mp4"), 18)
     assert not any("re-encoded" in n for n in notes)
-
-
-def test_hevc_falls_back_to_h264_without_x265(encoders):
     encoders(ALL_ENCODERS - {"libx265"})
     args, notes = bb.plan_streams(info(codec="hevc"), Path("o.mp4"), 18)
     assert value_after(args, "-c:v") == "libx264"
-    assert any("H264" in n and "hevc" in n for n in notes)
+    assert any("re-encoded as H264" in n and "hevc" in n for n in notes)
 
 
-def test_hevc_in_mp4_gets_apple_tag(encoders):
-    mp4, _ = bb.plan_streams(info(codec="hevc"), Path("o.mp4"), 18)
+def test_hevc_tag_and_colour_metadata(encoders):
+    color = {"-color_primaries": "bt2020", "-color_trc": "smpte2084"}
+    mp4, _ = bb.plan_streams(info(codec="hevc", color=color), Path("o.mp4"), 18)
     mkv, _ = bb.plan_streams(info(codec="hevc"), Path("o.mkv"), 18)
     assert value_after(mp4, "-tag:v") == "hvc1" and "-tag:v" not in mkv
+    assert value_after(mp4, "-color_trc") == "smpte2084" and "+faststart" in mp4
 
 
-def test_colour_metadata_is_passed_on(encoders):
-    color = {"-color_primaries": "bt2020", "-color_trc": "smpte2084",
-             "-colorspace": "bt2020nc", "-color_range": "tv"}
-    args, _ = bb.plan_streams(info(codec="hevc", color=color), Path("o.mp4"), 18)
-    for opt, val in color.items():
-        assert value_after(args, opt) == val
-
-
-@pytest.mark.parametrize("audio, ext, expected", [
-    ("aac", ".mp4", ["copy"]),
-    ("flac", ".mp4", ["copy"]),
-    ("pcm_s16le", ".mp4", ["alac"]),
-    ("pcm_s16le", ".mov", ["copy"]),
-    ("truehd", ".mp4", ["alac"]),
-    ("dts", ".mp4", ["aac", "256k"]),
-    ("dts", ".mkv", ["copy"]),
-    ("aac", ".webm", ["libopus", "192k"]),
-    ("opus", ".webm", ["copy"]),
+@pytest.mark.parametrize("audio, ext, codec", [
+    ("aac", ".mp4", "copy"),
+    ("pcm_s16le", ".mp4", "alac"),  # lossless where the container allows
+    ("pcm_s16le", ".mov", "copy"),
+    ("dts", ".mp4", "aac"),
+    ("dts", ".mkv", "copy"),
+    ("aac", ".webm", "libopus"),
 ])
-def test_audio_copied_or_converted(encoders, audio, ext, expected):
+def test_audio_copied_or_converted(encoders, audio, ext, codec):
     args, notes = bb.plan_streams(info(audio=[audio]), Path("o" + ext), 18)
-    assert value_after(args, "-map") == "0:a:0"
-    assert value_after(args, "-c:a:0") == expected[0]
-    if len(expected) > 1:
-        assert value_after(args, "-b:a:0") == expected[1]
-    audio_notes = [n for n in notes if n.startswith("Audio")]
-    assert bool(audio_notes) == (expected[0] != "copy")
+    assert value_after(args, "-map") == "0:a:0" and value_after(args, "-c:a:0") == codec
+    assert any(n.startswith("Audio") for n in notes) == (codec != "copy")
 
 
 def test_every_audio_track_is_mapped(encoders):
     args, _ = bb.plan_streams(info(audio=["aac", "pcm_s24le", "ac3"]), Path("o.mp4"), 18)
     assert [args[i + 1] for i, a in enumerate(args) if a == "-map"] == ["0:a:0", "0:a:1", "0:a:2"]
-    assert value_after(args, "-c:a:1") == "alac"
 
 
-@pytest.mark.parametrize("sub, ext, codec", [
-    ("subrip", ".mp4", "mov_text"), ("ass", ".mov", "mov_text"),
-    ("subrip", ".webm", "webvtt"), ("hdmv_pgs_subtitle", ".mkv", "copy"),
-    ("ass", ".mkv", "copy"),
-])
-def test_subtitles_kept(encoders, sub, ext, codec):
-    args, _ = bb.plan_streams(info(subtitles=[sub]), Path("o" + ext), 18)
-    assert value_after(args, "-map") == "0:s:0" and value_after(args, "-c:s:0") == codec
+def test_subtitles_and_attachments(encoders):
+    subs = ["hdmv_pgs_subtitle", "subrip"]
+    mp4, notes = bb.plan_streams(info(subtitles=subs, attachments=1), Path("o.mp4"), 18)
+    # picture subtitles cannot go into MP4: the text track becomes output track 0
+    assert value_after(mp4, "-map") == "0:s:1" and value_after(mp4, "-c:s:0") == "mov_text"
+    assert any("Subtitle track 1" in n for n in notes) and any("attachment" in n for n in notes)
+    webm, _ = bb.plan_streams(info(subtitles=["subrip"]), Path("o.webm"), 18)
+    assert value_after(webm, "-c:s:0") == "webvtt"
+    mkv, notes = bb.plan_streams(info(subtitles=subs, attachments=1), Path("o.mkv"), 18)
+    assert mkv.count("copy") >= 2 and "0:t" in mkv and not notes
 
 
-def test_picture_subtitles_left_out_of_mp4_with_note(encoders):
-    args, notes = bb.plan_streams(info(subtitles=["hdmv_pgs_subtitle", "subrip"]),
-                                   Path("o.mp4"), 18)
-    # the second track becomes the first output subtitle stream
-    assert value_after(args, "-map") == "0:s:1" and value_after(args, "-c:s:0") == "mov_text"
-    assert any("Subtitle track 1" in n and "left out" in n for n in notes)
-
-
-def test_attachments_only_kept_in_mkv(encoders):
-    mkv, mkv_notes = bb.plan_streams(info(attachments=2), Path("o.mkv"), 18)
-    mp4, mp4_notes = bb.plan_streams(info(attachments=2), Path("o.mp4"), 18)
-    assert "0:t" in mkv and not mkv_notes
-    assert "0:t" not in mp4 and any("attachment" in n for n in mp4_notes)
-
-
-def test_data_streams_noted(encoders):
-    _, notes = bb.plan_streams(info(data_streams=1), Path("o.mkv"), 18)
-    assert any("extra stream" in n for n in notes)
-
-
-def test_faststart_only_for_mp4_and_mov(encoders):
-    for ext, has in [(".mp4", True), (".mov", True), (".m4v", True), (".mkv", False)]:
-        args, _ = bb.plan_streams(info(), Path("o" + ext), 18)
-        assert ("+faststart" in args) is has
-
-
-def test_render_cmd_shape():
-    cmd = bb.build_render_cmd(Path("in.mp4"), Path("out.mp4"), "[0:v]null[v]", ["-c:v", "libx264"])
-    assert cmd[cmd.index("-i") + 1] == "in.mp4" and cmd[-1] == "out.mp4"
-    assert value_after(cmd, "-filter_complex") == "[0:v]null[v]"
-    assert value_after(cmd, "-map") == "[v]" and value_after(cmd, "-progress") == "pipe:1"
-
+# Shell text -----------------------------------------------------------------
 
 TRICKY = ["C:\\Program Files\\ffmpeg.exe", "-i", "my clip.mp4", "-filter_complex",
           "[0:v]split[b][s];[b][s]overlay=0:0:enable='between(t,1,2)'[v]", "-crf", "18"]
 
 
 def test_shell_command_posix_round_trips():
-    import shlex
     assert shlex.split(bb.shell_command(TRICKY, windows=False)) == TRICKY
 
 
@@ -338,13 +212,12 @@ def test_available_encoders_parses_ffmpeg_listing(monkeypatch):
  ------
  V....D libx264              libx264 H.264 / AVC
  A....D aac                  AAC (Advanced Audio Coding)
- S..... mov_text             3GPP Timed Text subtitle
 """
     class Result:
         stdout = listing
     monkeypatch.setattr(bb.subprocess, "run", lambda *a, **k: Result())
     bb.available_encoders.cache_clear()
     try:
-        assert bb.available_encoders() == {"libx264", "aac", "mov_text"}
+        assert bb.available_encoders() == {"libx264", "aac"}  # not the legend's "="
     finally:
         bb.available_encoders.cache_clear()

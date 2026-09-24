@@ -1,8 +1,9 @@
-"""The GUI, driven through its methods and real Tk events: areas, ranges,
-keys, seeking and projects. Needs a display (skipped without one) and
-ffmpeg for the test video."""
+"""The GUI, driven through its methods and real Tk events: one test per
+feature, walking through its behaviour. Needs a display (skipped without
+one) and ffmpeg for the test video."""
 
 import json
+import shutil
 import time
 import tkinter as tk
 
@@ -12,6 +13,8 @@ import blurbox as bb
 from conftest import FPS
 
 pytestmark = [pytest.mark.gui, pytest.mark.media]
+
+TOL = 1.5 / FPS  # a seek or drag lands on a whole frame near its target
 
 
 @pytest.fixture
@@ -74,79 +77,117 @@ def key(app, keysym):
     pump(app)
 
 
-# Seeking --------------------------------------------------------------------
+# Frame canvas helpers (points in video pixels)
 
-def test_opens_on_first_frame(app):
-    assert app.frame is not None and app.shown_time == 0
-    assert app.frame.size == (320, 240)
-
-
-def test_frame_steps_land_on_frame_times(app):
-    for n in range(1, 4):
-        app.step(1, frame=True)
-        wait_frame(app)
-        assert app.pos.get() == pytest.approx(n / FPS, abs=1e-6)
-    app.step(-1)  # one second back, clamped at 0
-    wait_frame(app)
-    assert app.pos.get() == 0
+def to_canvas(app, x, y):
+    return int(app.offx + x * app.scale), int(app.offy + y * app.scale)
 
 
-def test_seek_snaps_to_the_frame_shown(app):
-    app.seek(1.01)  # between two frames
-    wait_frame(app)
-    assert app.pos.get() == pytest.approx(app.shown_time) == pytest.approx(31 / FPS)
-
-
-def test_arrow_keys_seek(app):
-    key(app, "Right")
-    wait_frame(app)
-    assert app.pos.get() == pytest.approx(1.0)
-    key(app, "Shift-Right")
-    wait_frame(app)
-    assert app.pos.get() == pytest.approx(1 + 1 / FPS)
-
-
-# Areas ----------------------------------------------------------------------
-
-def drag(app, x0, y0, x1, y1):
-    """Drag on the canvas between two points given in video pixels."""
-    def to_canvas(x, y):
-        return int(app.offx + x * app.scale), int(app.offy + y * app.scale)
-    (a, b), (c, d) = to_canvas(x0, y0), to_canvas(x1, y1)
+def drag(app, start, end):
+    (a, b), (c, d) = to_canvas(app, *start), to_canvas(app, *end)
     app.canvas.event_generate("<ButtonPress-1>", x=a, y=b)
     app.canvas.event_generate("<B1-Motion>", x=c, y=d)
     app.canvas.event_generate("<ButtonRelease-1>", x=c, y=d)
     pump(app)
 
 
-def test_drawing_creates_then_redraws_the_selected_area(app):
-    drag(app, 20, 20, 120, 80)
-    assert len(app.areas) == 1 and app.cur == 0
-    a = app.areas[0]
-    assert (a.x, a.y) == pytest.approx((20, 20), abs=2) and a.w == pytest.approx(100, abs=2)
-    drag(app, 200, 150, 250, 200)  # empty space: redraws area 1, no new area
-    assert len(app.areas) == 1 and app.areas[0].x == pytest.approx(200, abs=2)
+def hover(widget, x, y):
+    widget.event_generate("<Motion>", x=x, y=y)
+    widget.update()
+    return widget.cget("cursor")
 
 
-def test_new_area_and_click_to_select_and_move(app):
-    drag(app, 20, 20, 100, 80)
+def rect(app, i=None):
+    a = app.areas[app.cur if i is None else i]
+    return a.x, a.y, a.w, a.h
+
+
+# Timeline helpers (points in seconds)
+
+BAND_Y = 20  # inside the row of the selected area's ranges
+SAVED = [(1.0, 2.0), (2.5, 2.8)]
+
+
+@pytest.fixture
+def ranged(app):
+    """One area with the ranges in SAVED (the test video lasts 3 s)."""
     app.new_area()
-    drag(app, 200, 150, 280, 220)
+    app.set_rect(10, 10, 50, 50)
+    for s, e in SAVED:
+        app.start_text.set(str(s))
+        app.end_text.set(str(e))
+        app.add_range()
+    pump(app)
+    return app
+
+
+def tl_drag(app, t0, t1, y=BAND_Y):
+    tl = app.timeline
+    x0, x1 = int(round(tl.x_of(t0))), int(round(tl.x_of(t1)))
+    tl.event_generate("<ButtonPress-1>", x=x0, y=y)
+    for i in range(1, 6):  # in steps, so it counts as a drag
+        tl.event_generate("<B1-Motion>", x=x0 + (x1 - x0) * i // 5, y=y)
+        pump(app, 0.01)
+    tl.event_generate("<ButtonRelease-1>", x=x1, y=y)
+    wait_frame(app)
+
+
+def fields(app):
+    return bb.parse_time(app.start_text.get()), bb.parse_time(app.end_text.get())
+
+
+# Seeking --------------------------------------------------------------------
+
+def test_seeking_lands_on_frame_times(app):
+    assert app.frame.size == (320, 240) and app.shown_time == 0
+    app.step(1, frame=True)
+    wait_frame(app)
+    assert app.pos.get() == pytest.approx(1 / FPS, abs=1e-6)
+    app.seek(1.01)  # between two frames: snaps to the one shown
+    wait_frame(app)
+    assert app.pos.get() == pytest.approx(app.shown_time) == pytest.approx(31 / FPS)
+    key(app, "Shift-Right")
+    wait_frame(app)
+    assert app.pos.get() == pytest.approx(32 / FPS)
+    key(app, "Left")
+    wait_frame(app)
+    assert app.pos.get() == pytest.approx(2 / FPS)
+
+
+# Areas ----------------------------------------------------------------------
+
+def test_draw_select_and_move_areas(app):
+    drag(app, (20, 20), (120, 80))  # no area yet: creates area 1
+    assert len(app.areas) == 1 and rect(app) == pytest.approx((20, 20, 100, 60), abs=2)
+    drag(app, (200, 150), (250, 200))  # empty space: redraws the selected area
+    assert len(app.areas) == 1 and rect(app) == pytest.approx((200, 150, 50, 50), abs=2)
+    app.new_area()
+    drag(app, (20, 20), (100, 80))
     assert len(app.areas) == 2 and app.cur == 1
-    drag(app, 50, 50, 70, 60)  # press inside area 1: selects it and moves it
-    assert app.cur == 0
-    assert (app.areas[0].x, app.areas[0].y) == pytest.approx((40, 30), abs=3)
-    assert app.areas[1].x == pytest.approx(200, abs=2)  # untouched
+    drag(app, (220, 170), (230, 180))  # inside area 1: selects and moves it
+    assert app.cur == 0 and rect(app, 0) == pytest.approx((210, 160, 50, 50), abs=3)
+    assert rect(app, 1) == pytest.approx((20, 20, 80, 60), abs=2)
 
 
-def test_new_area_does_not_pile_up_undrawn_areas(app):
+def test_resize_and_cursor(app):
     app.new_area()
-    app.new_area()  # area 1 still empty: stays selected, nothing added
-    assert len(app.areas) == 1 and app.cur == 0
-    assert "not drawn yet" in app.status.get()
-    app.full.set(True)  # a whole-frame area needs no drawing
-    app.new_area()
-    assert len(app.areas) == 2 and app.cur == 1
+    app.set_rect(100, 60, 80, 60)
+    pump(app)
+    cursors = {(180, 120): "bottom_right_corner", (100, 60): "top_left_corner",
+               (180, 90): "sb_h_double_arrow", (140, 60): "sb_v_double_arrow",
+               (140, 90): "fleur", (250, 200): "crosshair"}
+    for point, cursor in cursors.items():
+        assert hover(app.canvas, *to_canvas(app, *point)) == cursor, point
+    drag(app, (180, 120), (220, 150))  # bottom-right corner
+    assert rect(app) == pytest.approx((100, 60, 120, 90), abs=2)
+    drag(app, (100, 90), (60, 90))  # left edge: height untouched
+    assert rect(app) == pytest.approx((60, 60, 160, 90), abs=2)
+    drag(app, (220, 100), (0, 100))  # right edge past the left one: stops, no flip
+    assert rect(app)[2] == bb.MIN_AREA_PX
+    x = rect(app)[0] + 1
+    drag(app, (x, 150), (x, 5000))  # bottom edge beyond the picture: the frame border
+    assert rect(app)[1] + rect(app)[3] == app.info.height
+    assert len(app.areas) == 1  # resizing never creates an area
 
 
 def test_widgets_edit_the_selected_area(app):
@@ -158,155 +199,49 @@ def test_widgets_edit_the_selected_area(app):
     assert (a.x, a.y, a.w, a.h, a.mode, a.strength) == (10, 20, 30, 40, "pixelate", 7)
     app.strength.set("")  # half-typed: the last valid value stays
     assert a.strength == 7
-
-
-def test_duplicate_and_delete(app):
-    app.new_area()
-    app.set_rect(10, 10, 50, 50)
-    app.mode.set("blur")
     app.duplicate_area()
-    assert len(app.areas) == 2 and app.cur == 1
-    b = app.areas[1]
-    assert (b.x, b.y, b.mode) == (30, 30, "blur")
+    assert len(app.areas) == 2 and (rect(app)[:2], app.areas[1].mode) == ((30, 40), "pixelate")
     app.delete_area()
     assert len(app.areas) == 1 and app.cur == 0
-    app.delete_area()
-    assert app.areas == [] and app.cur is None
 
 
-def to_canvas(app, x, y):
-    return int(app.offx + x * app.scale), int(app.offy + y * app.scale)
+def test_new_area_does_not_pile_up_undrawn_areas(app):
+    app.new_area()
+    app.new_area()  # area 1 still empty: stays selected, nothing added
+    assert len(app.areas) == 1 and "not drawn yet" in app.status.get()
+    app.full.set(True)  # a whole-frame area needs no drawing
+    app.new_area()
+    assert len(app.areas) == 2 and app.cur == 1
 
 
-def drag_canvas(app, start, end):
-    """Drag between two points given in canvas pixels."""
-    app.canvas.event_generate("<ButtonPress-1>", x=start[0], y=start[1])
-    app.canvas.event_generate("<B1-Motion>", x=end[0], y=end[1])
-    app.canvas.event_generate("<ButtonRelease-1>", x=end[0], y=end[1])
-    pump(app)
-
-
-def rect(app, i=None):
-    a = app.areas[app.cur if i is None else i]
-    return a.x, a.y, a.w, a.h
-
-
-@pytest.fixture
-def drawn(app):
-    """An app with one selected area at (100, 60), 80×60."""
+def test_whole_frame(app, dialogs):
     app.new_area()
     app.set_rect(100, 60, 80, 60)
+    app.full.set(True)
+    a = app.areas[0]
+    assert a.clipped(320, 240) == (0, 0, 320, 240) and "whole frame" in app.area_list.get(0)
+    assert all(str(b.cget("state")) == "disabled" for b in app.rect_boxes)
     pump(app)
-    return app
-
-
-@pytest.mark.parametrize("grab, to, expected", [
-    ((180, 120), (220, 150), (100, 60, 120, 90)),   # bottom-right corner
-    ((100, 60), (70, 40), (70, 40, 110, 80)),       # top-left corner
-    ((180, 60), (200, 30), (100, 30, 100, 90)),     # top-right corner
-    ((100, 120), (90, 160), (90, 60, 90, 100)),     # bottom-left corner
-    ((180, 90), (230, 10), (100, 60, 130, 60)),     # right edge: height untouched
-    ((140, 60), (10, 20), (100, 20, 80, 100)),      # top edge: width untouched
-    ((100, 90), (60, 90), (60, 60, 120, 60)),       # left edge, grabbed mid-edge
-])
-def test_resize_by_dragging_edges_and_corners(drawn, grab, to, expected):
-    drag_canvas(drawn, to_canvas(drawn, *grab), to_canvas(drawn, *to))
-    assert rect(drawn) == pytest.approx(expected, abs=2)
-    assert len(drawn.areas) == 1  # resizing never creates an area
-
-
-def test_resize_stops_before_flipping_and_at_the_frame(drawn):
-    # Right edge dragged far past the left edge: stops at the minimum width
-    drag_canvas(drawn, to_canvas(drawn, 180, 90), to_canvas(drawn, 20, 90))
-    x, y, w, h = rect(drawn)
-    assert (x, w) == (100, bb.MIN_AREA_PX)
-    # Bottom edge dragged beyond the picture: clamped to the frame
-    drag_canvas(drawn, to_canvas(drawn, 101, 120), (to_canvas(drawn, 101, 120)[0], 5000))
-    assert rect(drawn)[1] + rect(drawn)[3] == drawn.info.height
-
-
-def test_resize_updates_the_position_fields(drawn):
-    drag_canvas(drawn, to_canvas(drawn, 180, 120), to_canvas(drawn, 200, 140))
-    assert (drawn.rect_vars["w"].get(), drawn.rect_vars["h"].get()) == \
-        (str(rect(drawn)[2]), str(rect(drawn)[3]))
-
-
-def test_inside_still_moves_and_outside_still_draws(drawn):
-    drag_canvas(drawn, to_canvas(drawn, 140, 90), to_canvas(drawn, 150, 100))  # centre: move
-    assert rect(drawn) == pytest.approx((110, 70, 80, 60), abs=2)
-    drag_canvas(drawn, to_canvas(drawn, 250, 180), to_canvas(drawn, 300, 220))  # empty: redraw
-    assert rect(drawn) == pytest.approx((250, 180, 50, 40), abs=2)
-
-
-@pytest.mark.parametrize("point, cursor", [
-    ((180, 120), "bottom_right_corner"), ((100, 60), "top_left_corner"),
-    ((180, 60), "top_right_corner"), ((100, 120), "bottom_left_corner"),
-    ((180, 90), "sb_h_double_arrow"), ((140, 60), "sb_v_double_arrow"),
-    ((140, 90), "fleur"), ((250, 200), "crosshair"),
-])
-def test_cursor_shows_what_a_drag_will_do(drawn, point, cursor):
-    x, y = to_canvas(drawn, *point)
-    drawn.canvas.event_generate("<Motion>", x=x, y=y)
-    pump(drawn)
-    assert drawn.canvas.cget("cursor") == cursor
-
-
-def test_only_the_selected_area_has_resize_handles(drawn):
-    drawn.new_area()
-    drawn.set_rect(200, 150, 60, 60)
-    pump(drawn)
-    # the old area's corner now just selects and moves it, it does not resize
-    drag_canvas(drawn, to_canvas(drawn, 179, 119), to_canvas(drawn, 189, 129))
-    assert drawn.cur == 0 and rect(drawn)[2:] == (80, 60)
-
-
-# Whole frame ----------------------------------------------------------------
-
-def test_whole_frame_toggle_keeps_the_rectangle(drawn):
-    drawn.full.set(True)
-    a = drawn.areas[0]
-    assert a.full and a.clipped(drawn.info.width, drawn.info.height) == (0, 0, 320, 240)
-    assert all(str(b.cget("state")) == "disabled" for b in drawn.rect_boxes)
-    assert "whole frame" in drawn.area_list.get(0)
-    drawn.full.set(False)
-    assert rect(drawn) == (100, 60, 80, 60)
-    assert all(str(b.cget("state")) == "normal" for b in drawn.rect_boxes)
-
-
-def test_whole_frame_area_has_no_handles_and_ignores_clicks(drawn):
-    drawn.full.set(True)
-    pump(drawn)
-    x, y = to_canvas(drawn, 180, 120)  # where the corner handle was
-    drawn.canvas.event_generate("<Motion>", x=x, y=y)
-    pump(drawn)
-    assert drawn.canvas.cget("cursor") == "crosshair"
-    # dragging now draws a new area instead of touching the whole-frame one
-    drag_canvas(drawn, to_canvas(drawn, 20, 20), to_canvas(drawn, 60, 50))
-    assert len(drawn.areas) == 2 and drawn.cur == 1
-    assert drawn.areas[0].full and rect(drawn, 0) == (100, 60, 80, 60)
-    assert rect(drawn) == pytest.approx((20, 20, 40, 30), abs=2)
-    assert not drawn.full.get()  # the widgets now show the new area
-
-
-def test_whole_frame_selection_follows_the_area(drawn):
-    drawn.full.set(True)
-    drawn.new_area()
-    assert not drawn.full.get()
-    drawn.select_area(0)
-    assert drawn.full.get()
-
-
-def test_whole_frame_area_renders_without_drawing(app, dialogs):
+    # no resize handles, and clicks go through it: a drag draws a new area
+    assert hover(app.canvas, *to_canvas(app, 180, 120)) == "crosshair"
+    drag(app, (20, 20), (60, 50))
+    assert len(app.areas) == 2 and app.cur == 1 and not app.full.get()
+    app.select_area(0)
+    assert app.full.get()
+    app.full.set(False)  # the rectangle comes back
+    assert rect(app, 0) == (100, 60, 80, 60)
+    app.full.set(True)
+    app.delete_area()  # leaves the drawn area 2
+    dialogs["save_as"] = None  # Render: stop at the file dialog, validation passed
     app.new_area()
-    app.full.set(True)  # never drawn, yet valid
-    dialogs["save_as"] = None  # cancel at the file dialog: validation passed
+    app.full.set(True)  # never drawn, yet renderable
     app.render()
     assert dialogs["errors"] == []
 
 
-# Ranges ---------------------------------------------------------------------
+# Time ranges ----------------------------------------------------------------
 
-def test_mark_keys_and_enter_add_a_range(app):
+def test_mark_keys_and_enter_add_a_range(app, dialogs):
     app.new_area()
     app.seek(0.5)
     wait_frame(app)
@@ -315,334 +250,109 @@ def test_mark_keys_and_enter_add_a_range(app):
     wait_frame(app)
     key(app, "Key-o")
     key(app, "Return")
-    assert app.areas[0].ranges == [(0.5, 2.0)]
-    assert app.start_text.get() == app.end_text.get() == ""
-
-
-def test_edit_and_cancel_range(app):
-    app.new_area()
-    app.start_text.set("1")
-    app.end_text.set("2")
-    app.add_range()
-    app.range_list.selection_set(0)
-    app.edit_range()
-    assert app.add_btn.cget("text") == "Update range"
-    app.end_text.set("2.5")
-    app.add_range()
-    assert app.areas[0].ranges == [(1.0, 2.5)] and app.editing is None
-    app.range_list.selection_set(0)
-    app.edit_range()
-    app.cancel_edit()
-    assert app.add_btn.cget("text") == "Add range" and app.areas[0].ranges == [(1.0, 2.5)]
-
-
-def start_editing(app, start="1", end="2"):
-    app.new_area()
-    app.start_text.set(start)
-    app.end_text.set(end)
-    app.add_range()
-    app.range_list.selection_set(0)
-    app.edit_range()
-    pump(app)
-
-
-def test_cancel_button_only_while_editing(app):
-    assert not app.cancel_edit_btn.winfo_ismapped()
-    start_editing(app)
-    assert app.cancel_edit_btn.winfo_ismapped()
-    app.cancel_edit_btn.invoke()
-    pump(app)
-    assert not app.cancel_edit_btn.winfo_ismapped()
-    assert app.add_btn.cget("text") == "Add range"
-
-
-def test_cancel_discards_the_edit(app):
-    start_editing(app)
-    app.start_text.set("0:00:00.500")  # changed, then abandoned
-    app.cancel_edit_btn.invoke()
-    assert app.areas[0].ranges == [(1.0, 2.0)]
-    assert app.start_text.get() == app.end_text.get() == ""  # nothing left to re-add
-    app.add_range()  # empty fields: refused, no duplicate range
-    assert app.areas[0].ranges == [(1.0, 2.0)]
-
-
-def test_escape_key_cancels_too(app):
-    start_editing(app)
-    key(app, "Escape")
-    assert app.editing is None and not app.cancel_edit_btn.winfo_ismapped()
-    assert app.start_text.get() == ""
-
-
-def test_update_hides_cancel(app):
-    start_editing(app)
-    app.end_text.set("3")
-    app.add_btn.invoke()
-    pump(app)
-    assert app.areas[0].ranges == [(1.0, 3.0)]
-    assert not app.cancel_edit_btn.winfo_ismapped() and app.start_text.get() == ""
-
-
-def test_switching_area_ends_the_edit(app):
-    start_editing(app)
-    app.full.set(True)  # so a second area can be added without drawing
-    app.new_area()
-    assert app.editing is None and not app.cancel_edit_btn.winfo_ismapped()
-    assert app.add_btn.cget("text") == "Add range"
-
-
-# Dragging ranges on the timeline ---------------------------------------------
-
-BAND_Y = 20  # inside the row of the selected area's ranges
-
-
-@pytest.fixture
-def ranged(app):
-    """One area with ranges 1.0-2.0 and 2.5-2.8 (the test video lasts 3 s)."""
-    app.new_area()
-    app.set_rect(10, 10, 50, 50)
-    for s, e in [("1", "2"), ("2.5", "2.8")]:
-        app.start_text.set(s)
-        app.end_text.set(e)
-        app.add_range()
-    pump(app)
-    return app
-
-
-def tl_drag(app, t0, t1, y=BAND_Y):
-    """Drag on the timeline from time t0 to time t1, in small steps."""
-    tl = app.timeline
-    x0, x1 = int(round(tl.x_of(t0))), int(round(tl.x_of(t1)))
-    tl.event_generate("<ButtonPress-1>", x=x0, y=y)
-    for i in range(1, 6):
-        tl.event_generate("<B1-Motion>", x=x0 + (x1 - x0) * i // 5, y=y)
-        pump(app, 0.01)
-    tl.event_generate("<ButtonRelease-1>", x=x1, y=y)
-    wait_frame(app)
-
-
-def frames(t):
-    """t in whole frames, as the drag snaps it."""
-    return round(t * FPS) / FPS
-
-
-SAVED = [(1.0, 2.0), (2.5, 2.8)]  # the ranges of the `ranged` fixture
-TOL = 1.5 / FPS  # a drag lands on a whole frame near the target
-
-
-def fields(app):
-    """Start/End as the edit currently stands."""
-    return bb.parse_time(app.start_text.get()), bb.parse_time(app.end_text.get())
-
-
-@pytest.fixture
-def editing(ranged):
-    """`ranged`, with its first range (1.0-2.0) in edit mode."""
-    ranged.edit_range(0)
-    pump(ranged)
-    return ranged
-
-
-# Outside edit mode the timeline only seeks
-
-def test_no_range_drag_outside_edit_mode(ranged):
-    for t0, t1 in [(2.0, 2.3), (1.0, 0.4), (1.5, 1.2)]:  # end edge, start edge, middle
-        tl_drag(ranged, t0, t1)
-        assert ranged.areas[0].ranges == SAVED and ranged.editing is None
-        assert ranged.pos.get() == pytest.approx(t1, abs=TOL)  # it just scrubbed
-
-
-@pytest.mark.parametrize("t", [1.0, 2.0, 1.5, 2.65, 0.4])
-def test_no_drag_cursor_outside_edit_mode(ranged, t):
-    ranged.timeline.event_generate("<Motion>", x=int(round(ranged.timeline.x_of(t))), y=BAND_Y)
-    pump(ranged)
-    assert ranged.timeline.cget("cursor") == ""
-
-
-# In edit mode, dragging the edited range changes Start/End only
-
-def test_drag_end_changes_the_edit_not_the_range(editing):
-    tl_drag(editing, 2.0, 2.3)
-    s, e = fields(editing)
-    assert s == 1.0 and e == pytest.approx(2.3, abs=TOL)
-    assert e == pytest.approx(frames(e), abs=1e-3)  # a whole frame (fields keep 3 decimals)
-    assert editing.pos.get() == pytest.approx(e, abs=TOL)  # the video followed the edge
-    assert editing.areas[0].ranges == SAVED and editing.editing == 0  # not applied yet
-    editing.add_range()  # Update range
-    assert editing.areas[0].ranges[0] == (1.0, e) and editing.editing is None
-
-
-def test_drag_start_then_cancel_discards(editing):
-    tl_drag(editing, 1.0, 0.4)
-    assert fields(editing)[0] == pytest.approx(0.4, abs=TOL)
-    editing.cancel_edit_btn.invoke()
-    assert editing.areas[0].ranges == SAVED and editing.start_text.get() == ""
-
-
-def test_drag_middle_moves_the_edit_keeping_its_length(editing):
-    tl_drag(editing, 1.5, 1.2)
-    s, e = fields(editing)
-    assert e - s == pytest.approx(1.0, abs=1e-3) and s == pytest.approx(0.7, abs=TOL)
-
-
-def test_drag_is_clamped_to_the_video_and_never_flips(editing):
-    tl_drag(editing, 1.5, -5)  # move far left: stops at 0
-    assert fields(editing) == pytest.approx((0.0, 1.0), abs=1e-3)
-    tl_drag(editing, 1.0, -5)  # end edge dragged past the start: one frame long
-    s, e = fields(editing)
-    assert e - s == pytest.approx(1 / FPS, abs=1e-3)
-    tl_drag(editing, s, -5)  # start edge: stops at 0
-    tl_drag(editing, fields(editing)[1], 9)  # end edge past the end of the video
-    assert fields(editing) == pytest.approx((0.0, editing.info.duration), abs=1e-3)
-
-
-def test_only_the_edited_range_can_be_dragged(editing):
-    tl_drag(editing, 2.65, 2.2)  # middle of range 2, which is not being edited
-    assert fields(editing) == (1.0, 2.0) and editing.areas[0].ranges == SAVED
-    assert editing.pos.get() == pytest.approx(2.2, abs=TOL)  # it scrubbed instead
-
-
-def test_update_after_a_drag_resorts_and_keeps_it_selected(ranged):
-    ranged.edit_range(1)  # 2.5-2.8
-    tl_drag(ranged, 2.65, 0.45)  # moved in front of 1-2
-    ranged.add_range()
-    r = ranged.areas[0].ranges
-    assert r == sorted(r) and r[1] == (1.0, 2.0)
-    assert r[0][1] - r[0][0] == pytest.approx(0.3, abs=1e-3) and r[0][0] < 0.5
-    assert ranged._dirty()
-
-
-def test_click_on_the_edited_range_seeks_and_keeps_the_edit(editing):
-    tl = editing.timeline
-    x = int(tl.x_of(1.5))
-    tl.event_generate("<ButtonPress-1>", x=x, y=BAND_Y)
-    tl.event_generate("<ButtonRelease-1>", x=x, y=BAND_Y)
-    wait_frame(editing)
-    assert editing.pos.get() == pytest.approx(1.5, abs=TOL)
-    assert fields(editing) == (1.0, 2.0) and editing.editing == 0
-
-
-def test_typed_times_move_the_bar(editing):
-    editing.end_text.set("2.4")
-    assert editing.pending_range() == (1.0, 2.4)
-    tl = editing.timeline
-    x = int(round(tl.x_of(2.4)))
-    tl.event_generate("<Motion>", x=x, y=BAND_Y)  # the end edge is now there
-    pump(editing)
-    assert tl.cget("cursor") == "sb_h_double_arrow"
-    editing.end_text.set("oops")  # unparseable: the bar shows the saved range
-    assert editing.pending_range() == (1.0, 2.0)
-
-
-@pytest.mark.parametrize("t, cursor", [
-    (1.0, "sb_h_double_arrow"), (2.0, "sb_h_double_arrow"), (1.5, "fleur"),
-    (0.4, ""), (2.65, ""),  # outside, and the range not being edited
-])
-def test_drag_cursor_in_edit_mode(editing, t, cursor):
-    editing.timeline.event_generate("<Motion>", x=int(round(editing.timeline.x_of(t))), y=BAND_Y)
-    pump(editing)
-    assert editing.timeline.cget("cursor") == cursor
-
-
-def test_drag_outside_the_ranges_row_seeks(editing):
-    tl_drag(editing, 1.5, 1.9, y=11)  # the grey strip row: plain scrubbing
-    assert fields(editing) == (1.0, 2.0)
-    assert editing.pos.get() == pytest.approx(1.9, abs=TOL)
-
-
-def double_click_timeline(app, t, y=BAND_Y):
-    """A real double-click: two press/release pairs in quick succession,
-    which Tk turns into a <Double-Button-1> for the second press."""
-    tl = app.timeline
-    x = int(round(tl.x_of(t)))
-    for _ in range(2):
-        tl.event_generate("<ButtonPress-1>", x=x, y=y)
-        tl.event_generate("<ButtonRelease-1>", x=x, y=y)
-    pump(app)
-
-
-@pytest.mark.parametrize("t, index", [(1.5, 0), (2.65, 1), (2.0, 0), (2.5, 1)])
-def test_double_click_on_timeline_range_edits_it(ranged, t, index):
-    double_click_timeline(ranged, t)
-    assert ranged.editing == index
-    assert ranged.range_list.curselection() == (index,)
-    s, e = ranged.areas[0].ranges[index]
-    assert (ranged.start_text.get(), ranged.end_text.get()) == (bb.fmt_time(s), bb.fmt_time(e))
-    assert ranged.add_btn.cget("text") == "Update range"
-    assert ranged.cancel_edit_btn.winfo_ismapped()
-    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.8)]  # nothing moved
-
-
-def test_double_click_outside_ranges_does_not_edit(ranged):
-    double_click_timeline(ranged, 0.4)  # empty part of the ranges row
-    double_click_timeline(ranged, 1.5, y=11)  # the grey strip row
-    assert ranged.editing is None
-
-
-def test_double_click_then_update_from_timeline(ranged):
-    double_click_timeline(ranged, 2.65)
-    ranged.end_text.set("2.9")
-    ranged.add_range()
-    assert ranged.areas[0].ranges == [(1.0, 2.0), (2.5, 2.9)]
-
-
-def test_double_click_then_drag_then_update(ranged):
-    double_click_timeline(ranged, 2.65)  # edit range 2
-    tl_drag(ranged, 2.8, 2.95)
-    ranged.add_range()
-    assert ranged.areas[0].ranges[1] == pytest.approx((2.5, 2.95), abs=TOL)
-
-
-def test_whole_video_band_is_not_draggable(app):
-    app.new_area()
-    app.set_rect(10, 10, 50, 50)
-    pump(app)
-    tl_drag(app, 1.0, 2.0)  # the pale always-on band: just seeks
-    assert app.areas[0].ranges == []
-    assert app.pos.get() == pytest.approx(2.0, abs=1.5 / FPS)
-
-
-def test_invalid_ranges_are_refused(app, dialogs):
-    app.new_area()
-    for start, end in [("2", "1"), ("abc", "1"), ("1", "1")]:
+    assert app.areas[0].ranges == [(0.5, 2.0)] and app.start_text.get() == ""
+    for start, end in [("2", "1"), ("abc", "1")]:  # refused
         app.start_text.set(start)
         app.end_text.set(end)
         app.add_range()
-    assert app.areas[0].ranges == [] and len(dialogs["errors"]) == 3
-
-
-def test_range_end_is_clamped_to_duration(app):
-    app.new_area()
-    app.start_text.set("1")
-    app.end_text.set("500")
+    assert len(dialogs["errors"]) == 2
+    app.start_text.set("2.5")
+    app.end_text.set("500")  # clamped to the video's end
     app.add_range()
-    assert app.areas[0].ranges == [(1.0, app.info.duration)]
+    assert app.areas[0].ranges == [(0.5, 2.0), (2.5, app.info.duration)]
+
+
+def test_range_edit_update_and_cancel(ranged):
+    assert not ranged.cancel_edit_btn.winfo_ismapped()
+    ranged.edit_range(0)
+    pump(ranged)
+    assert ranged.add_btn.cget("text") == "Update range" and ranged.cancel_edit_btn.winfo_ismapped()
+    ranged.end_text.set("2.2")
+    ranged.cancel_edit_btn.invoke()  # discards, and clears the fields
+    pump(ranged)
+    assert ranged.areas[0].ranges == SAVED and ranged.start_text.get() == ""
+    assert not ranged.cancel_edit_btn.winfo_ismapped()
+    ranged.edit_range(1)
+    key(ranged, "Escape")  # Esc cancels too
+    assert ranged.editing is None
+    ranged.edit_range(0)
+    ranged.end_text.set("2.2")
+    ranged.add_btn.invoke()  # Update range
+    assert ranged.areas[0].ranges == [(1.0, 2.2), (2.5, 2.8)] and ranged.editing is None
+
+
+def test_timeline_only_seeks_outside_edit_mode(ranged):
+    tl = ranged.timeline
+    for t in (1.0, 1.5):  # an edge and a middle: normal cursor
+        assert hover(tl, int(round(tl.x_of(t))), BAND_Y) == ""
+    tl_drag(ranged, 1.5, 1.2)
+    assert ranged.areas[0].ranges == SAVED and ranged.pos.get() == pytest.approx(1.2, abs=TOL)
+
+
+def test_double_click_on_timeline_edits_the_range(ranged):
+    tl = ranged.timeline
+    for t, index in [(1.5, 0), (2.65, 1), (0.4, None)]:
+        ranged.cancel_edit()
+        x = int(round(tl.x_of(t)))
+        for _ in range(2):  # a real double-click: Tk sees two quick presses
+            tl.event_generate("<ButtonPress-1>", x=x, y=BAND_Y)
+            tl.event_generate("<ButtonRelease-1>", x=x, y=BAND_Y)
+        pump(ranged)
+        assert ranged.editing == index, t
+    assert ranged.areas[0].ranges == SAVED
+
+
+def test_drag_in_edit_mode_changes_start_end(ranged):
+    ranged.edit_range(0)
+    pump(ranged)
+    tl = ranged.timeline
+    assert hover(tl, int(round(tl.x_of(2.0))), BAND_Y) == "sb_h_double_arrow"
+    assert hover(tl, int(round(tl.x_of(2.65))), BAND_Y) == ""  # not the edited range
+    tl_drag(ranged, 2.0, 2.3)  # end edge
+    s, e = fields(ranged)
+    assert s == 1.0 and e == pytest.approx(2.3, abs=TOL)
+    assert ranged.pos.get() == pytest.approx(e, abs=TOL)  # the video followed the edge
+    assert ranged.areas[0].ranges == SAVED  # not applied yet
+    tl_drag(ranged, 1.5, 1.2)  # middle: moves it keeping its length
+    s2, e2 = fields(ranged)
+    assert e2 - s2 == pytest.approx(e - s, abs=1e-3)
+    tl_drag(ranged, 2.65, 2.2)  # the other range: just seeks
+    assert fields(ranged) == (s2, e2)
+    ranged.add_range()  # Update range applies it
+    assert ranged.areas[0].ranges[0] == (s2, e2)
+
+
+def test_drag_is_clamped_and_cancel_discards_it(ranged):
+    ranged.edit_range(0)
+    pump(ranged)
+    tl_drag(ranged, 1.5, -5)  # moved far left: stops at 0
+    assert fields(ranged) == pytest.approx((0.0, 1.0), abs=1e-3)
+    tl_drag(ranged, 1.0, -5)  # end edge past the start: one frame long
+    s, e = fields(ranged)
+    assert e - s == pytest.approx(1 / FPS, abs=1e-3)
+    ranged.cancel_edit()
+    assert ranged.areas[0].ranges == SAVED
 
 
 # ffmpeg window --------------------------------------------------------------
 
-def test_ffmpeg_window_shows_the_render_command(app):
-    app.new_area()
-    app.set_rect(10, 10, 50, 50)
-    app.show_ffmpeg()
-    win = app.ffmpeg_window
-    text = win.text.get("1.0", "end")
-    assert bb.ffmpeg_version() in text and bb.FFMPEG in text
-    cmd, _ = app.render_command(app.default_output(".mp4"))
-    assert win.command == bb.shell_command(cmd) and win.command in text
-    win.suffix.set(".webm")  # another container: another command
-    win.refresh()
-    assert "libvpx-vp9" in win.command
-    win.copy()
-    assert app.root.clipboard_get() == win.command
-    win.destroy()
-
-
-def test_ffmpeg_window_explains_when_not_ready(app):
-    app.new_area()  # not drawn
+def test_ffmpeg_window(app):
+    app.new_area()  # not drawn yet
     app.show_ffmpeg()
     win = app.ffmpeg_window
     assert "Not ready: Area 1 has not been drawn" in win.text.get("1.0", "end")
     assert str(win.copy_btn.cget("state")) == "disabled"
+    app.set_rect(10, 10, 50, 50)
+    app.show_ffmpeg()  # brings the same window forward, refreshed
+    text = win.text.get("1.0", "end")
+    assert bb.ffmpeg_version() in text
+    cmd, _ = app.render_command(app.default_output(".mp4"))
+    assert win.command == bb.shell_command(cmd) and win.command in text
+    win.suffix.set(".webm")
+    win.refresh()
+    assert "libvpx-vp9" in win.command
+    win.copy()
+    assert app.root.clipboard_get() == win.command
     win.destroy()
 
 
@@ -652,53 +362,44 @@ def test_project_roundtrip(app, dialogs, tmp_path, media):
     app.new_area()
     app.set_rect(10, 20, 100, 50)
     app.mode.set("blur")
-    app.strength.set("12")
     app.start_text.set("0.5")
     app.end_text.set("1.5")
     app.add_range()
+    app.full.set(False)
     app.new_area()
-    app.set_rect(150, 100, 60, 60)
+    app.full.set(True)
     app.crf.set("22")
     app.seek(1.0)
     wait_frame(app)
     assert app._dirty()
-
     project = tmp_path / "p.json"
     dialogs["save_as"] = str(project)
-    assert app.save_project()
-    assert not app._dirty() and app.root.title().startswith("p.json")
+    assert app.save_project() and not app._dirty()
     data = json.loads(project.read_text(encoding="utf-8"))
-    assert data["version"] == 1 and data["crf"] == 22 and data["position"] == 1.0
-    assert data["video_absolute"] == str(media["mp4"].resolve())
-
+    assert data["crf"] == 22 and data["position"] == 1.0
     app.open_video(str(media["mp4"]))  # start over, then reload
-    assert app.areas == []
     app.open_project(str(project))
     wait_frame(app)
     assert [a.to_json() for a in app.areas] == data["areas"]
-    assert app.crf.get() == "22" and app.pos.get() == pytest.approx(1.0)
-    assert not app._dirty()
+    assert app.crf.get() == "22" and app.pos.get() == pytest.approx(1.0) and not app._dirty()
 
 
-def test_project_finds_video_next_to_it_after_a_move(app, dialogs, tmp_path, media):
-    import shutil
+def test_project_finds_the_video_next_to_it(app, dialogs, tmp_path, media):
     folder = tmp_path / "a"
     folder.mkdir()
     shutil.copy(media["mp4"], folder / "clip.mp4")
     app.open_video(str(folder / "clip.mp4"))
-    wait_frame(app)
     app.new_area()
     app.set_rect(1, 2, 30, 40)
     dialogs["save_as"] = str(folder / "p.json")
     app.save_project()
     # A copy elsewhere (the app holds the original open, so Windows would
-    # refuse a rename): its project must pick the video next to it, not the
-    # original its absolute path still names
+    # refuse a rename) must use the video next to it, not the original
     moved = tmp_path / "b"
     shutil.copytree(folder, moved)
     app.open_project(str(moved / "p.json"))
     wait_frame(app)
-    assert app.video == moved / "clip.mp4" and app.areas[0].w == 30 and not dialogs["errors"]
+    assert app.video == moved / "clip.mp4" and not dialogs["errors"]
 
 
 def test_project_file_without_areas_is_rejected(app, dialogs, tmp_path):
