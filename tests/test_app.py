@@ -139,6 +139,16 @@ def test_new_area_and_click_to_select_and_move(app):
     assert app.areas[1].x == pytest.approx(200, abs=2)  # untouched
 
 
+def test_new_area_does_not_pile_up_undrawn_areas(app):
+    app.new_area()
+    app.new_area()  # area 1 still empty: stays selected, nothing added
+    assert len(app.areas) == 1 and app.cur == 0
+    assert "not drawn yet" in app.status.get()
+    app.full.set(True)  # a whole-frame area needs no drawing
+    app.new_area()
+    assert len(app.areas) == 2 and app.cur == 1
+
+
 def test_widgets_edit_the_selected_area(app):
     app.new_area()
     app.set_rect(10, 20, 30, 40)
@@ -324,6 +334,60 @@ def test_edit_and_cancel_range(app):
     app.edit_range()
     app.cancel_edit()
     assert app.add_btn.cget("text") == "Add range" and app.areas[0].ranges == [(1.0, 2.5)]
+
+
+def start_editing(app, start="1", end="2"):
+    app.new_area()
+    app.start_text.set(start)
+    app.end_text.set(end)
+    app.add_range()
+    app.range_list.selection_set(0)
+    app.edit_range()
+    pump(app)
+
+
+def test_cancel_button_only_while_editing(app):
+    assert not app.cancel_edit_btn.winfo_ismapped()
+    start_editing(app)
+    assert app.cancel_edit_btn.winfo_ismapped()
+    app.cancel_edit_btn.invoke()
+    pump(app)
+    assert not app.cancel_edit_btn.winfo_ismapped()
+    assert app.add_btn.cget("text") == "Add range"
+
+
+def test_cancel_discards_the_edit(app):
+    start_editing(app)
+    app.start_text.set("0:00:00.500")  # changed, then abandoned
+    app.cancel_edit_btn.invoke()
+    assert app.areas[0].ranges == [(1.0, 2.0)]
+    assert app.start_text.get() == app.end_text.get() == ""  # nothing left to re-add
+    app.add_range()  # empty fields: refused, no duplicate range
+    assert app.areas[0].ranges == [(1.0, 2.0)]
+
+
+def test_escape_key_cancels_too(app):
+    start_editing(app)
+    key(app, "Escape")
+    assert app.editing is None and not app.cancel_edit_btn.winfo_ismapped()
+    assert app.start_text.get() == ""
+
+
+def test_update_hides_cancel(app):
+    start_editing(app)
+    app.end_text.set("3")
+    app.add_btn.invoke()
+    pump(app)
+    assert app.areas[0].ranges == [(1.0, 3.0)]
+    assert not app.cancel_edit_btn.winfo_ismapped() and app.start_text.get() == ""
+
+
+def test_switching_area_ends_the_edit(app):
+    start_editing(app)
+    app.full.set(True)  # so a second area can be added without drawing
+    app.new_area()
+    assert app.editing is None and not app.cancel_edit_btn.winfo_ismapped()
+    assert app.add_btn.cget("text") == "Add range"
 
 
 def test_invalid_ranges_are_refused(app, dialogs):

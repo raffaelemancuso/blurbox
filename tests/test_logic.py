@@ -131,7 +131,7 @@ def test_area_label():
         "1.  Blur 25,  400×150 at 200,100,  2 ranges"
     assert Area(0, 0, 10, 10, "black", 20, [(1, 2)]).label(1) == \
         "2.  Black box,  10×10 at 0,0,  1 range"
-    assert Area().label(2) == "3.  Black box,  not drawn yet,  whole video"
+    assert Area().label(2) == "3.  Black box,  not drawn yet,  always"
 
 
 # Video info -----------------------------------------------------------------

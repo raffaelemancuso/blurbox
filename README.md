@@ -1,8 +1,8 @@
 # blurbox
 
 A small desktop tool to hide parts of a video: draw one or more rectangles on
-the frame and cover each with a black box, a blur or pixelation, for the
-whole video or only during chosen time ranges. It is a GUI around ffmpeg and
+the frame and cover each with a black box, a blur or pixelation, all the
+time or only during chosen time ranges. It is a GUI around ffmpeg and
 runs on Windows and Linux.
 
 ## Requirements
@@ -53,8 +53,8 @@ shortcut stores absolute paths.
   area to select and move it, drag an edge or corner of the selected area
   (it shows white handles) to resize it, "New area" to add another. The
   mouse cursor shows which of these a drag will do. Each area has its own
-  effect, strength and time ranges; with no ranges it covers the whole
-  video.
+  effect, strength and time ranges; with no ranges it is on all the time
+  (listed as "always").
 - **Whole frame**: tick it to make the selected area cover the entire
   picture (e.g. blur everything from 0:12 to 0:15); untick it to get its
   rectangle back.

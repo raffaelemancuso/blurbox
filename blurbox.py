@@ -4,7 +4,7 @@
 # dependencies = ["av>=18", "pillow>=10"]
 # ///
 """Cover fixed areas of a video with a black box, a blur or pixelation, each
-for the whole video or only during chosen time ranges. GUI wrapper around
+all the time or only during chosen time ranges. GUI wrapper around
 ffmpeg; works on Windows and Linux (needs ffmpeg and ffprobe on PATH, and
 Tk: on Arch `pacman -S tk`, on Debian/Ubuntu `apt install python3-tk`).
 
@@ -14,7 +14,7 @@ Usage:
 Areas: drag on the frame to draw the selected area, drag inside any area to
 select and move it, drag an edge or corner of the selected area to resize
 it; "New area" adds another. Each area has its own effect and time ranges
-(none = the whole video).
+(none = always).
 
 Seeking: the timeline (click or drag), the step buttons (hold to repeat) or
 the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
@@ -122,7 +122,7 @@ class Area:
     h: int = 0
     mode: str = "black"
     strength: int = 20
-    ranges: list = field(default_factory=list)  # (start, end) s; empty = whole video
+    ranges: list = field(default_factory=list)  # (start, end) s; empty = always
     # Cover the entire frame; x/y/w/h are kept, so turning it off restores them
     full: bool = False
 
@@ -152,7 +152,7 @@ class Area:
 
     def label(self, i: int) -> str:
         eff = MODES[self.mode] + ("" if self.mode == "black" else f" {self.strength}")
-        when = f"{len(self.ranges)} range{'s' * (len(self.ranges) != 1)}" if self.ranges else "whole video"
+        when = f"{len(self.ranges)} range{'s' * (len(self.ranges) != 1)}" if self.ranges else "always"
         if self.full:
             size = "whole frame"
         else:
@@ -714,6 +714,8 @@ class App:
                        command=lambda v=var: self.mark(v)).pack(side="left", padx=(2, 10))
         self.add_btn = ttk.Button(row, text="Add range", width=13, command=self.add_range)
         self.add_btn.pack(side="left")
+        # Shown only while a range is being edited (see _show_editing)
+        self.cancel_edit_btn = ttk.Button(row, text="Cancel", command=self.cancel_edit)
         ttk.Button(row, text="Remove", command=self.remove_range).pack(side="left", padx=4)
         row2 = ttk.Frame(tr)
         row2.pack(fill="x", pady=(3, 0))
@@ -721,7 +723,7 @@ class App:
         self.range_list.pack(side="left")
         self.range_list.bind("<<ListboxSelect>>", self._range_selected)
         self.range_list.bind("<Double-Button-1>", lambda e: self.edit_range())
-        ttk.Label(row2, text="  No ranges = the whole video.\n  Double-click a range to edit it.\n"
+        ttk.Label(row2, text="  No ranges = always (start to end).\n  Double-click a range to edit it.\n"
                              "  Times: seconds, m:ss or h:mm:ss.fff").pack(side="left", anchor="n")
 
         act = ttk.Frame(self.root)
@@ -808,7 +810,8 @@ class App:
         self.project = None
         self.frame = None
         self.shown_time = None
-        self.areas, self.cur, self.editing = [], None, None
+        self.cancel_edit()
+        self.areas, self.cur = [], None
         self._refresh_areas()
         depth = "10-bit " if "10" in info.pix_fmt else "12-bit " if "12" in info.pix_fmt else ""
         hdr = " HDR" if info.color.get("-color_trc") in ("smpte2084", "arib-std-b67") else ""
@@ -1143,13 +1146,19 @@ class App:
             self.select_area(sel[0])
 
     def select_area(self, i: int):
-        self.cur, self.editing = i, None
-        self.add_btn.config(text="Add range")
+        self.cancel_edit()  # an edit belongs to the area it started in
+        self.cur = i
         self._refresh_areas()
         self.schedule_redraw()
 
     def new_area(self):
         if not self.info:
+            return
+        a = self.current()
+        if a and not a.full and (a.w <= 0 or a.h <= 0):
+            # The selected area is still empty: draw that one rather than
+            # piling up undrawn areas, which would then block the render
+            self.status.set(f"Area {self.cur + 1} is not drawn yet: drag on the frame to draw it.")
             return
         self.areas.append(Area(mode=self.mode.get(), strength=self._strength_or(20)))
         self.select_area(len(self.areas) - 1)
@@ -1168,9 +1177,9 @@ class App:
     def delete_area(self):
         if self.cur is None:
             return
+        self.cancel_edit()
         del self.areas[self.cur]
         self.cur = min(self.cur, len(self.areas) - 1) if self.areas else None
-        self.editing = None
         self._refresh_areas()
         self.schedule_redraw()
 
@@ -1303,9 +1312,11 @@ class App:
         else:
             a.ranges.append((s, e))
         a.ranges.sort()
-        self.cancel_edit()
+        self.editing = None
         self.start_text.set("")
         self.end_text.set("")
+        self.status.set("")
+        self._show_editing()
         self._refresh_areas()
         self.schedule_redraw()
 
@@ -1328,17 +1339,29 @@ class App:
         s, e = a.ranges[self.editing]
         self.start_text.set(fmt_time(s))
         self.end_text.set(fmt_time(e))
-        self.add_btn.config(text="Update range")
-        self.status.set(f"Editing range {self.editing + 1}: change Start/End, then Enter "
-                        f"(Esc cancels).")
-        self.timeline.redraw()
+        self.status.set(f"Editing range {self.editing + 1}: change Start/End, then Update range "
+                        f"(Enter), or Cancel (Esc).")
+        self._show_editing()
 
     def cancel_edit(self):
-        if self.editing is not None:
-            self.editing = None
+        """Leave range editing, discarding the times being edited."""
+        if self.editing is None:
+            return
+        self.editing = None
+        self.start_text.set("")
+        self.end_text.set("")
+        self.status.set("")
+        self._show_editing()
+
+    def _show_editing(self):
+        """Buttons and timeline for editing a range, or for adding one."""
+        if self.editing is None:
             self.add_btn.config(text="Add range")
-            self.status.set("")
-            self.timeline.redraw()
+            self.cancel_edit_btn.pack_forget()
+        else:
+            self.add_btn.config(text="Update range")
+            self.cancel_edit_btn.pack(side="left", padx=(4, 0), after=self.add_btn)
+        self.timeline.redraw()
 
     def _refresh_ranges(self):
         self.range_list.delete(0, "end")

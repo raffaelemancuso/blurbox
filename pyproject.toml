@@ -1,6 +1,6 @@
 [project]
 name = "blurbox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cover areas of a video with a black box, blur or pixelation: a desktop GUI around ffmpeg"
 readme = "README.md"
 license = "MIT"
@@ -26,6 +26,13 @@ classifiers = [
     "Topic :: Multimedia :: Video",
     "Topic :: Multimedia :: Video :: Conversion",
 ]
+
+# Shown as links in the sidebar of the PyPI page
+[project.urls]
+Homepage = "https://github.com/raffaelemancuso/blurbox"
+Source = "https://github.com/raffaelemancuso/blurbox"
+Issues = "https://github.com/raffaelemancuso/blurbox/issues"
+Changelog = "https://github.com/raffaelemancuso/blurbox/releases"
 
 # A GUI entry point: on Windows it starts without a console window
 [project.gui-scripts]
