@@ -5,6 +5,13 @@ the frame and cover each with a black box, a blur or pixelation, all the
 time or only during chosen time ranges. It is a GUI around ffmpeg and
 runs on Windows and Linux.
 
+![blurbox with three areas on a frame of Big Buck Bunny: a face pixelated, a head blurred, eyes covered by a black bar](https://raw.githubusercontent.com/raffaelemancuso/blurbox/master/docs/screenshot.png)
+
+*Three areas, each with its own effect and time ranges; the selected one (red,
+with resize handles) blurs during the two ranges shown in red on the timeline.
+Frame from [Big Buck Bunny](https://peach.blender.org/), © 2008 Blender
+Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).*
+
 ## Requirements
 
 - Python 3.11 or newer
