@@ -61,8 +61,11 @@ shortcut stores absolute paths.
 - **Seeking**: click or drag the timeline, use the step buttons (hold them
   to repeat), or the keys ←/→ (1 s) and Shift+←/→ (one frame).
 - **Time ranges**: I and O put the current time in Start and End, Enter adds
-  the range, a double-click on a range edits it, Esc cancels the edit. The
-  timeline shows the selected area's ranges in red, the others' in grey.
+  the range, a double-click on a range edits it (Cancel or Esc discards the
+  edit). The timeline shows the selected area's ranges in red, the others'
+  in grey. Drag an edge of a red range to change that end, with the video
+  following the edge so you can place it on the exact frame, or drag its
+  middle to move the whole range; a plain click still seeks.
 - **Show effect** (E) draws every active area's effect on the frame, using
   the same ffmpeg filters as the render.
 - **Projects**: Ctrl+S saves the areas, quality and position as JSON,

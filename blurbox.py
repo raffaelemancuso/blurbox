@@ -21,7 +21,9 @@ the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
 
 Ranges: I and O put the current time in Start and End, Enter adds the range;
 double-click a range to edit it, Esc cancels the edit. The timeline shows the
-selected area's ranges in red and the other areas' in grey.
+selected area's ranges in red and the other areas' in grey; drag an edge of
+a red range to change that end (the video follows the edge), or its middle
+to move the whole range.
 
 "Show effect" (E) draws every area's effect on the frame as it will be
 rendered, so only the areas active at that time are covered.
@@ -507,17 +509,26 @@ class FrameWorker(threading.Thread):
 
 class Timeline(tk.Canvas):
     """Seek bar that also shows the time ranges: the selected area's in red,
-    the other areas' as a thin grey strip. Click or drag to seek."""
+    the other areas' as a thin grey strip. Click or drag to seek; drag an
+    edge of a red range to change that end, or its middle to move it."""
 
     HEIGHT, MARGIN = 34, 8
+    BAND_TOP, BAND_BOTTOM = 15, 26  # the selected area's ranges
+    EDGE_PX = 5  # how close to a range edge (screen pixels) grabs the edge
+    DRAG_PX = 3  # movement that turns a click on a range into a drag
 
     def __init__(self, master, app: "App"):
         super().__init__(master, height=self.HEIGHT, highlightthickness=0)
         self.app = app
+        # A press on a range: (index, "start"/"end"/"move", press x, range
+        # at the press); it becomes a drag once the mouse moves DRAG_PX
+        self.grab = None
+        self.dragging = False
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<ButtonPress-1>", self._press)
-        self.bind("<B1-Motion>", lambda e: self._seek_to(e.x))
-        self.bind("<ButtonRelease-1>", self.app._scrub_end)
+        self.bind("<B1-Motion>", self._motion)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Motion>", self._hover)
 
     def _span(self) -> tuple[int, int]:
         return self.MARGIN, max(self.MARGIN + 1, self.winfo_width() - self.MARGIN)
@@ -526,15 +537,92 @@ class Timeline(tk.Canvas):
         a, b = self._span()
         return a + (b - a) * t / self.app.info.duration
 
+    def t_of(self, x: float) -> float:
+        a, b = self._span()
+        return (x - a) / (b - a) * self.app.info.duration
+
+    def _range_at(self, x: float, y: float) -> tuple[int, str] | None:
+        """The selected area's range under a point, and which part: its
+        "start" or "end" edge, or its middle ("move"). Edges win, so a short
+        range can still be stretched."""
+        cur = self.app.current() if self.app.info else None
+        if not cur or not cur.ranges or not self.BAND_TOP - 3 <= y <= self.BAND_BOTTOM + 3:
+            return None
+        edges = []
+        for j, (s, e) in enumerate(cur.ranges):
+            xs, xe = self.x_of(s), max(self.x_of(e), self.x_of(s) + 2)
+            edges += [(abs(x - xs), j, "start"), (abs(x - xe), j, "end")]
+        dist, j, part = min(edges)
+        if dist <= self.EDGE_PX:
+            return j, part
+        return next(((j, "move") for j, (s, e) in enumerate(cur.ranges)
+                     if self.x_of(s) < x < self.x_of(e)), None)
+
+    def _hover(self, e):
+        hit = self._range_at(e.x, e.y)
+        cursor = "" if not hit else "fleur" if hit[1] == "move" else "sb_h_double_arrow"
+        if self.cget("cursor") != cursor:
+            self.config(cursor=cursor)
+
     def _press(self, e):
-        if self.app.info:
+        if not self.app.info:
+            return
+        hit = self._range_at(e.x, e.y)
+        if hit:
+            j, part = hit
+            self.grab = (j, part, e.x, self.app.current().ranges[j])
+            self.dragging = False
+            return
+        self.app.scrubbing = True
+        self._seek_to(e.x)
+
+    def _motion(self, e):
+        if not self.grab:
+            self._seek_to(e.x)
+            return
+        j, part, x0, (s0, e0) = self.grab
+        if not self.dragging:
+            if abs(e.x - x0) < self.DRAG_PX:
+                return
+            self.dragging = True
+            self.app.cancel_edit()  # dragging is itself the edit
+            self.app.scrubbing = True
+        info = self.app.info
+        frame = 1 / info.fps
+
+        def snap(t):  # to whole frames, like the times the player shows
+            return round(t / frame) * frame
+
+        dt = self.t_of(e.x) - self.t_of(x0)
+        if part == "start":
+            s, en = min(max(snap(s0 + dt), 0.0), e0 - frame), e0
+        elif part == "end":
+            s, en = s0, max(min(snap(e0 + dt), info.duration), s0 + frame)
+        else:  # keep the length, stay inside the video
+            s = min(max(snap(s0 + dt), 0.0), info.duration - (e0 - s0))
+            en = s + (e0 - s0)
+        self.app.current().ranges[j] = (s, en)
+        self.redraw()
+        # Show the frame at the edge being dragged, to place it precisely
+        self.app.seek(en if part == "end" else s)
+
+    def _release(self, e):
+        if not self.grab:
+            self.app._scrub_end()
+            return
+        grab, dragging = self.grab, self.dragging
+        self.grab, self.dragging = None, False
+        if not dragging:  # a click on a range seeks, as anywhere else
             self.app.scrubbing = True
             self._seek_to(e.x)
+            self.app._scrub_end()
+            return
+        self.app.range_dragged(grab[0])
+        self.app._scrub_end()
 
     def _seek_to(self, x: float):
         if self.app.info:
-            a, b = self._span()
-            self.app.seek((x - a) / (b - a) * self.app.info.duration)
+            self.app.seek(self.t_of(x))
 
     def redraw(self):
         self.delete("all")
@@ -550,8 +638,9 @@ class Timeline(tk.Canvas):
                                           fill="#8c8c8c", width=0)
         cur = app.current()
         if cur:
+            dragged = self.grab[0] if self.dragging else None
             for j, (s, e) in enumerate(cur.ranges or [(0, app.info.duration)]):
-                editing = cur.ranges and j == app.editing
+                editing = cur.ranges and j in (app.editing, dragged)
                 self.create_rectangle(self.x_of(s), 15, max(self.x_of(e), self.x_of(s) + 2), 26,
                                       fill="#f2b8ad" if not cur.ranges else "#e0503c",
                                       outline="#1060d0" if editing else "", width=2 if editing else 0)
@@ -1370,6 +1459,21 @@ class App:
             self.range_list.insert("end", f"{fmt_time(s)}  →  {fmt_time(e)}")
         if hasattr(self, "timeline"):
             self.timeline.redraw()
+
+    def range_dragged(self, j: int):
+        """A range was changed on the timeline: keep the list sorted and
+        leave the dragged range selected."""
+        a = self.current()
+        moved = a.ranges[j]
+        a.ranges.sort()
+        self._refresh_areas()
+        new = a.ranges.index(moved)
+        self.range_list.selection_clear(0, "end")
+        self.range_list.selection_set(new)
+        self.range_list.see(new)
+        s, e = moved
+        self.status.set(f"Range {new + 1}: {fmt_time(s)} → {fmt_time(e)}")
+        self.schedule_redraw()
 
     def _range_selected(self, _):
         sel = self.range_list.curselection()
