@@ -9,7 +9,7 @@ from pathlib import Path
 import av
 import pytest
 
-import video_cover_region as vcr
+import blurbox as bb
 
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 FPS = 30
@@ -27,10 +27,10 @@ def ffprobe_json(path: Path) -> dict:
 
 def render(src: Path, out: Path, areas: list, crf: int = 18) -> list[str]:
     """Render `src` to `out` exactly as the GUI does; return the notes."""
-    info = vcr.probe(src)
+    info = bb.probe(src)
     items = [(a, a.clipped(info.width, info.height)) for a in areas]
-    args, notes = vcr.plan_streams(info, out, crf)
-    cmd = vcr.build_render_cmd(src, out, vcr.build_filter(items, info), args)
+    args, notes = bb.plan_streams(info, out, crf)
+    cmd = bb.build_render_cmd(src, out, bb.build_filter(items, info), args)
     res = subprocess.run(cmd, capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
     return notes
@@ -76,7 +76,7 @@ def media(tmp_path_factory) -> dict[str, Path]:
            "-c:v", "copy", "-c:a:0", "copy", "-c:a:1", "flac", "-c:s", "srt",
            "-metadata:s:a:1", "language=ita", m["mkv"])
 
-    if "libx265" in vcr.available_encoders():
+    if "libx265" in bb.available_encoders():
         m["hdr"] = d / "hdr10.mov"
         ffmpeg("-f", "lavfi", "-i", f"testsrc2=size=320x240:rate={FPS}:duration=2",
                "-f", "lavfi", "-i", "sine=duration=2",

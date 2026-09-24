@@ -8,7 +8,7 @@ import tkinter as tk
 
 import pytest
 
-import video_cover_region as vcr
+import blurbox as bb
 from conftest import FPS
 
 pytestmark = [pytest.mark.gui, pytest.mark.media]
@@ -18,12 +18,12 @@ pytestmark = [pytest.mark.gui, pytest.mark.media]
 def dialogs(monkeypatch):
     """Replace every dialog; tests set the answers and read what was shown."""
     state = {"errors": [], "save_as": None, "open": None, "discard": False}
-    monkeypatch.setattr(vcr.messagebox, "showerror", lambda title, msg: state["errors"].append(msg))
-    monkeypatch.setattr(vcr.messagebox, "showwarning", lambda *a: None)
-    monkeypatch.setattr(vcr.messagebox, "showinfo", lambda *a: None)
-    monkeypatch.setattr(vcr.messagebox, "askyesnocancel", lambda *a: state["discard"])
-    monkeypatch.setattr(vcr.filedialog, "asksaveasfilename", lambda **k: state["save_as"])
-    monkeypatch.setattr(vcr.filedialog, "askopenfilename", lambda **k: state["open"])
+    monkeypatch.setattr(bb.messagebox, "showerror", lambda title, msg: state["errors"].append(msg))
+    monkeypatch.setattr(bb.messagebox, "showwarning", lambda *a: None)
+    monkeypatch.setattr(bb.messagebox, "showinfo", lambda *a: None)
+    monkeypatch.setattr(bb.messagebox, "askyesnocancel", lambda *a: state["discard"])
+    monkeypatch.setattr(bb.filedialog, "asksaveasfilename", lambda **k: state["save_as"])
+    monkeypatch.setattr(bb.filedialog, "askopenfilename", lambda **k: state["open"])
     return state
 
 
@@ -44,7 +44,7 @@ def tk_root():
 def app(media, dialogs, tk_root):
     window = tk.Toplevel(tk_root)  # the app treats it as its root window
     window.geometry("1100x850")
-    a = vcr.App(window, str(media["mp4"]))
+    a = bb.App(window, str(media["mp4"]))
     wait_frame(a)
     yield a
     a.saved = a._snapshot()  # nothing to save on close
@@ -270,9 +270,9 @@ def test_project_finds_video_next_to_it_after_a_move(app, dialogs, tmp_path, med
 
 def test_project_file_without_areas_is_rejected(app, dialogs, tmp_path):
     bad = tmp_path / "old.json"
-    bad.write_text(json.dumps({"app": "video_cover_region", "area": {"x": 1}}), encoding="utf-8")
+    bad.write_text(json.dumps({"app": "blurbox", "area": {"x": 1}}), encoding="utf-8")
     app.open_project(str(bad))
-    assert dialogs["errors"] == ["Not a video_cover_region project file."]
+    assert dialogs["errors"] == ["Not a blurbox project file."]
 
 
 def test_unsaved_changes_prompt(app, dialogs, tmp_path):

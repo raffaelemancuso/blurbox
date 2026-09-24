@@ -8,9 +8,9 @@ import av
 import pytest
 from PIL import ImageChops, ImageStat
 
-import video_cover_region as vcr
+import blurbox as bb
 from conftest import FPS, ffprobe_json, render, sequential_frames
-from video_cover_region import Area
+from blurbox import Area
 
 pytestmark = pytest.mark.media
 
@@ -28,7 +28,7 @@ def need(media, key):
 # Probe ----------------------------------------------------------------------
 
 def test_probe_basic(media):
-    info = vcr.probe(media["mp4"])
+    info = bb.probe(media["mp4"])
     assert (info.width, info.height, info.rotation) == (320, 240, 0)
     assert info.fps == pytest.approx(FPS)
     assert info.duration == pytest.approx(3, abs=0.1)
@@ -37,18 +37,18 @@ def test_probe_basic(media):
 
 
 def test_probe_rotated_swaps_dimensions(media):
-    info = vcr.probe(media["rot"])
+    info = bb.probe(media["rot"])
     assert info.rotation in (90, 270)
     assert (info.width, info.height) == (240, 320)
 
 
 def test_probe_streams(media):
-    info = vcr.probe(media["mkv"])
+    info = bb.probe(media["mkv"])
     assert info.audio == ["aac", "flac"] and info.subtitles == ["subrip"]
 
 
 def test_probe_hdr(media):
-    info = vcr.probe(need(media, "hdr"))
+    info = bb.probe(need(media, "hdr"))
     assert (info.codec, info.pix_fmt) == ("hevc", "yuv420p10le")
     assert info.color == {"-color_primaries": "bt2020", "-color_trc": "smpte2084",
                           "-colorspace": "bt2020nc", "-color_range": "tv"}
@@ -59,7 +59,7 @@ def test_probe_rejects_non_video(tmp_path):
     bad = tmp_path / "not_a_video.mp4"
     bad.write_bytes(b"hello")
     with pytest.raises(RuntimeError):
-        vcr.probe(bad)
+        bb.probe(bad)
 
 
 # Frame reader ---------------------------------------------------------------
@@ -72,8 +72,8 @@ SEEKS = [0, 1.0, 1 + 1 / FPS, 1 + 2 / FPS, 1 + 1 / FPS, 0.5, 2.9, 0.2, 2.0, 1.97
 @pytest.mark.parametrize("key", ["mp4", "ts", "rot"])
 def test_frame_reader_matches_sequential_decode(media, key):
     path = media[key]
-    info = vcr.probe(path)
-    reader = vcr.FrameReader(path, info)
+    info = bb.probe(path)
+    reader = bb.FrameReader(path, info)
     ref = sequential_frames(path)
     try:
         for t in SEEKS:
@@ -90,8 +90,8 @@ def test_frame_reader_matches_sequential_decode(media, key):
 
 
 def test_frame_reader_rotates_like_ffmpeg(media):
-    info = vcr.probe(media["rot"])
-    reader = vcr.FrameReader(media["rot"], info)
+    info = bb.probe(media["rot"])
+    reader = bb.FrameReader(media["rot"], info)
     img, _ = reader.get(0)
     reader.close()
     assert img.size == (info.width, info.height) == (240, 320)
@@ -118,15 +118,15 @@ def test_render_matches_live_preview(media, tmp_path, key):
     src = media[key]
     out = tmp_path / "out.mp4"
     render(src, out, AREAS, crf=0)  # lossless, so only colour conversion differs
-    info = vcr.probe(src)
-    src_reader, out_reader = vcr.FrameReader(src, info), vcr.FrameReader(out, vcr.probe(out))
+    info = bb.probe(src)
+    src_reader, out_reader = bb.FrameReader(src, info), bb.FrameReader(out, bb.probe(out))
     pad = 0.5 / info.fps
     try:
         for t in TIMES:
             raw, ft = src_reader.get(t)
             items = [(a, a.clipped(info.width, info.height)) for a in AREAS if a.active(ft, pad)]
             rendered, _ = out_reader.get(t)
-            assert mean_diff(vcr.apply_effects(raw, items), rendered) < 1.0, f"t={ft:.4f}"
+            assert mean_diff(bb.apply_effects(raw, items), rendered) < 1.0, f"t={ft:.4f}"
     finally:
         src_reader.close()
         out_reader.close()
@@ -160,11 +160,11 @@ def test_filters_leave_other_pixels_untouched_at_full_bit_depth(media):
     """Outside the areas the graph must pass 10-bit pixels through exactly:
     any hidden trip through 8 bits (as overlay makes by default) changes them."""
     src = need(media, "hdr")
-    info = vcr.probe(src)
+    info = bb.probe(src)
     areas = [Area(40, 120, 64, 32, m, 8) for m in ("black", "blur", "pixelate")]
     for i, a in enumerate(areas):
         a.x += 90 * i
-    fg = vcr.build_filter([(a, a.clipped(info.width, info.height)) for a in areas], info)
+    fg = bb.build_filter([(a, a.clipped(info.width, info.height)) for a in areas], info)
     before, after = raw_frame(src), raw_frame(src, fg)
     # Luma rows 0-99 lie above every area (they start at y=120)
     rows = 100 * info.width * 2
@@ -214,7 +214,7 @@ def test_render_mkv_to_mkv_copies_everything(media, tmp_path):
 
 
 def test_render_webm_converts_what_it_must(media, tmp_path):
-    if not {"libvpx-vp9", "libopus"} <= vcr.available_encoders():
+    if not {"libvpx-vp9", "libopus"} <= bb.available_encoders():
         pytest.skip("needs libvpx-vp9 and libopus")
     out = tmp_path / "out.webm"
     notes = render(media["mkv"], out, [Area(10, 10, 50, 50)])

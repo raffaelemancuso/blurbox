@@ -9,7 +9,7 @@ ffmpeg; works on Windows and Linux (needs ffmpeg and ffprobe on PATH, and
 Tk: on Arch `pacman -S tk`, on Debian/Ubuntu `apt install python3-tk`).
 
 Usage:
-    uv run --script video_cover_region.py [video | project.json]
+    uv run --script blurbox.py [video | project.json]
 
 Areas: drag on the frame to draw the selected area, drag inside any area to
 select and move it; "New area" adds another. Each area has its own effect
@@ -66,7 +66,7 @@ VIDEO_TYPES = [
     ("Video", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.wmv *.flv *.ts"),
     ("All files", "*.*"),
 ]
-PROJECT_TYPES = [("Video cover project", "*.json"), ("All files", "*.*")]
+PROJECT_TYPES = [("Blurbox project", "*.json"), ("All files", "*.*")]
 OUTPUT_TYPES = [("MP4", "*.mp4"), ("Matroska", "*.mkv"), ("QuickTime", "*.mov"), ("WebM", "*.webm")]
 MODES = {"black": "Black box", "blur": "Blur", "pixelate": "Pixelate"}
 
@@ -551,7 +551,7 @@ class Timeline(tk.Canvas):
 class App:
     def __init__(self, root: tk.Tk, path: str | None = None):
         self.root = root
-        root.title("Video cover region")
+        root.title("Blurbox")
         root.geometry("1150x900")
         root.minsize(900, 650)
 
@@ -818,7 +818,7 @@ class App:
 
     def _update_title(self):
         name = self.project.name if self.project else (self.video.name if self.video else "")
-        self.root.title(f"{name} – Video cover region" if name else "Video cover region")
+        self.root.title(f"{name} – Blurbox" if name else "Blurbox")
 
     def save_project(self, ask: bool = False) -> bool:
         if not self.video:
@@ -828,7 +828,7 @@ class App:
         if ask or path is None:
             path = filedialog.asksaveasfilename(
                 title="Save project", initialdir=self.video.parent,
-                initialfile=f"{self.video.stem}_cover.json", defaultextension=".json",
+                initialfile=f"{self.video.stem}_blurbox.json", defaultextension=".json",
                 filetypes=PROJECT_TYPES)
             if not path:
                 return False
@@ -845,7 +845,7 @@ class App:
         except ValueError:  # different drive on Windows
             rel = None
         data = {
-            "app": "video_cover_region",
+            "app": "blurbox",
             "version": 1,
             "video": rel,
             "video_absolute": str(self.video.resolve()),
@@ -874,8 +874,8 @@ class App:
         path = Path(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("app") != "video_cover_region" or "areas" not in data:
-                raise ValueError("Not a video_cover_region project file.")
+            if data.get("app") != "blurbox" or "areas" not in data:
+                raise ValueError("Not a blurbox project file.")
             areas = [Area.from_json(d) for d in data["areas"]]
         except (OSError, ValueError, TypeError, KeyError) as e:
             messagebox.showerror("Cannot open project", str(e))

@@ -29,6 +29,29 @@ wheels = [
 ]
 
 [[package]]
+name = "blurbox"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "av" },
+    { name = "pillow" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "av", specifier = ">=18" },
+    { name = "pillow", specifier = ">=10" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1" }]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -173,26 +196,3 @@ sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
 ]
-
-[[package]]
-name = "video-cover-region"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "av" },
-    { name = "pillow" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "av", specifier = ">=18" },
-    { name = "pillow", specifier = ">=10" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1" }]

@@ -1,10 +1,10 @@
 [project]
-name = "video-cover-region"
+name = "blurbox"
 version = "0.1.0"
 description = "GUI to cover areas of a video (black box, blur, pixelate) with ffmpeg"
 readme = "README.md"
 requires-python = ">=3.11"
-# Keep in sync with the inline metadata at the top of video_cover_region.py,
+# Keep in sync with the inline metadata at the top of blurbox.py,
 # which `uv run --script` and the Windows shortcut use
 dependencies = ["av>=18", "pillow>=10"]
 

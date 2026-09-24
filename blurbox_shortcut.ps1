@@ -1,12 +1,12 @@
-# Create video_cover_region.lnk next to video_cover_region.py: a shortcut that
+# Create blurbox.lnk next to blurbox.py: a shortcut that
 # starts the GUI through uvw.exe (uv's windowless launcher), so no console
 # window appears, unlike a .bat. Drag a video or a project .json onto the
 # shortcut to open it. Rerun after reinstalling uv or moving this folder,
 # since a shortcut stores absolute paths.
 #
 # Usage:
-#   .\video_cover_region_shortcut.ps1                 # shortcut in this folder
-#   .\video_cover_region_shortcut.ps1 -Desktop        # also one on the Desktop
+#   .\blurbox_shortcut.ps1                 # shortcut in this folder
+#   .\blurbox_shortcut.ps1 -Desktop        # also one on the Desktop
 
 param([switch]$Desktop)
 
@@ -14,12 +14,12 @@ $ErrorActionPreference = "Stop"
 
 $uvw = (Get-Command uvw.exe -ErrorAction SilentlyContinue).Source
 if (-not $uvw) { throw "uvw.exe not found on PATH: install uv first (https://docs.astral.sh/uv/)." }
-$script = Join-Path $PSScriptRoot "video_cover_region.py"
+$script = Join-Path $PSScriptRoot "blurbox.py"
 if (-not (Test-Path $script)) { throw "Not found: $script" }
 
-$targets = @(Join-Path $PSScriptRoot "video_cover_region.lnk")
+$targets = @(Join-Path $PSScriptRoot "blurbox.lnk")
 if ($Desktop) {
-    $targets += Join-Path ([Environment]::GetFolderPath("Desktop")) "Video cover region.lnk"
+    $targets += Join-Path ([Environment]::GetFolderPath("Desktop")) "Blurbox.lnk"
 }
 
 $shell = New-Object -ComObject WScript.Shell

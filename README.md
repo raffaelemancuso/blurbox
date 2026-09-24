@@ -1,4 +1,4 @@
-# video_cover_region
+# blurbox
 
 A small desktop tool to hide parts of a video: draw one or more rectangles on
 the frame and cover each with a black box, a blur or pixelation, for the
@@ -18,10 +18,10 @@ runs on Windows and Linux.
 ## Running
 
 ```sh
-uv run --script video_cover_region.py [video | project.json]
+uv run --script blurbox.py [video | project.json]
 ```
 
-On Windows, `video_cover_region_shortcut.ps1` creates `video_cover_region.lnk`,
+On Windows, `blurbox_shortcut.ps1` creates `blurbox.lnk`,
 a shortcut that starts the tool without a console window; add `-Desktop` for
 a copy on the Desktop. Drop a video or a project onto the shortcut to open
 it. Rerun the script after reinstalling uv or moving this folder, since a
