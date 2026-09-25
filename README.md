@@ -15,8 +15,8 @@ Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).*
 ## Requirements
 
 - Python 3.11 or newer
-- ffmpeg and ffprobe on `PATH` (they are separate programs, not installed
-  with blurbox); a full build is recommended, so the encoders used to keep
+- ffmpeg and ffprobe 5.1 or newer on `PATH` (they are separate programs,
+  not installed with blurbox); a full build is recommended, so the encoders used to keep
   the source codec (libx265, libsvtav1, libvpx-vp9, libopus) are available.
   On Windows, e.g. the "full" build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/);
   on Linux, your distribution's `ffmpeg` package

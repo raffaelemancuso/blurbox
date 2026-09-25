@@ -418,9 +418,13 @@ def plan_streams(info: VideoInfo, out: Path, crf: int) -> tuple[list[str], list[
 
 
 def build_render_cmd(src: Path, out: Path, filtergraph: str, stream_args: list[str]) -> list[str]:
-    # Metadata and chapters are copied by default; -map_metadata is explicit
+    # Metadata and chapters are copied by default; -map_metadata is explicit.
+    # -fps_mode passthrough keeps every frame at its source time: without it
+    # ffmpeg 6.1 (not 9.0) repeats the first frame when the audio starts before
+    # the video (common in MPEG-TS), so the whole video lands a frame late
     return [FFMPEG, "-y", "-v", "error", "-i", str(src),
-            "-filter_complex", filtergraph, "-map", "[v]", *stream_args,
+            "-filter_complex", filtergraph, "-map", "[v]", "-fps_mode", "passthrough",
+            *stream_args,
             "-map_metadata", "0", "-progress", "pipe:1", "-nostats", str(out)]
 
 
