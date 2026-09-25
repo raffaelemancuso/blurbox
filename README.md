@@ -15,13 +15,30 @@ Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).*
 ## Requirements
 
 - Python 3.11 or newer
-- ffmpeg and ffprobe 5.1 or newer on `PATH` (they are separate programs,
-  not installed with blurbox); a full build is recommended, so the encoders used to keep
-  the source codec (libx265, libsvtav1, libvpx-vp9, libopus) are available.
-  On Windows, e.g. the "full" build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/);
-  on Linux, your distribution's `ffmpeg` package
+- ffmpeg and ffprobe on `PATH` (they are separate programs, not installed
+  with blurbox): the latest release is recommended, 5.1 is the minimum (see
+  [ffmpeg versions](#ffmpeg-versions)). A full build is recommended, so the
+  encoders used to keep the source codec (libx265, libsvtav1, libvpx-vp9,
+  libopus) are available. On Windows, e.g. the "full" build from
+  [gyan.dev](https://www.gyan.dev/ffmpeg/builds/); on Linux, your
+  distribution's `ffmpeg` package
 - Tk: included with Python on Windows; on Linux `pacman -S tk` (Arch) or
   `apt install python3-tk` (Debian/Ubuntu)
+
+### ffmpeg versions
+
+- **Recommended: the latest release** (9.0 when this was written). The
+  tests run on 9.0 (Windows) and 6.1 (Ubuntu 24.04's package).
+- **Minimum: 5.1.** The render passes `-fps_mode passthrough`, an option
+  ffmpeg 5.1 introduced; older versions (e.g. 4.4 in Ubuntu 22.04) refuse
+  the render command.
+- **5.1 to 7.0.x work, with blurbox 0.1.3 or newer.** Without that option,
+  these versions repeat the first frame of a video whose audio starts
+  before it (common in MPEG-TS recordings), so the whole rendered video
+  lands one frame late against the audio and the preview. Measured on the
+  gyan.dev builds: 6.1.1, 7.0 and 7.0.2 repeat the frame; 7.1, 8.0 and 9.0
+  do not. blurbox 0.1.3 passes the option to every version, so the frames
+  keep their source times whatever the ffmpeg.
 
 ## Installing
 
