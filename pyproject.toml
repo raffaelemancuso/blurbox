@@ -1,6 +1,6 @@
 [project]
 name = "blurbox"
-version = "0.1.2"
+version = "0.1.3"
 description = "Cover areas of a video with a black box, blur or pixelation: a desktop GUI around ffmpeg"
 readme = "README.md"
 license = "MIT"
