@@ -4,10 +4,12 @@
 *.ps1   text eol=lf
 *.md    text eol=lf
 *.json  text eol=lf
+*.svg   text eol=lf
 
 # Binary
 *.lnk   binary
 *.png   binary
+*.ico   binary
 *.mp4   binary
 *.mkv   binary
 *.mov   binary

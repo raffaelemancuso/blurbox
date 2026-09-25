@@ -16,6 +16,7 @@ $uvw = (Get-Command uvw.exe -ErrorAction SilentlyContinue).Source
 if (-not $uvw) { throw "uvw.exe not found on PATH: install uv first (https://docs.astral.sh/uv/)." }
 $script = Join-Path $PSScriptRoot "blurbox.py"
 if (-not (Test-Path $script)) { throw "Not found: $script" }
+$icon = Join-Path $PSScriptRoot "docs\logo.ico"
 
 $targets = @(Join-Path $PSScriptRoot "blurbox.lnk")
 if ($Desktop) {
@@ -28,6 +29,7 @@ foreach ($lnk in $targets) {
     $s.TargetPath = $uvw
     $s.Arguments = "run --gui-script `"$script`""
     $s.WorkingDirectory = $PSScriptRoot
+    if (Test-Path $icon) { $s.IconLocation = "$icon,0" }
     $s.Description = "Cover part of a video (black box, blur, pixelate) with ffmpeg"
     $s.Save()
     Write-Host "Created: $lnk"

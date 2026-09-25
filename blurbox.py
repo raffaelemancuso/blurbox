@@ -77,6 +77,73 @@ RESIZE_CURSORS = {
     "lt": "top_left_corner", "rb": "bottom_right_corner",
     "rt": "top_right_corner", "lb": "bottom_left_corner",
 }
+# Window icon: docs/logo.svg as 16/32/64 px PNGs, written by tools/make_logo.py
+ICON_PNGS = (
+    # 16 px
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABxElEQVR42qWTO2hTURzGf+fc"
+    "e8mjaUzSSlBLHdQY0lJcWlzERSiCFhzcfAxOHZ3F0cXBSal0tYuLoOIgOEhFEBGRDqZDglWw"
+    "tPhITe69uc9zXHy03KRo+01nON/vfPz/5xMAh2rHLwDXgCr/pmXgRvP9qwXxy3yPnemiUdo7"
+    "ch8Y3iGgZvaLPTuzwezZjZ6uuccF5h4VAKrmdvgHz4e58zDPF1ttAW9WAnDsYI4rJ8tMjn1i"
+    "veVxeTLP248uiysBkUo+sgVwarzIzUsVLMtEGWuMCM2Z8UHGShqpIp6tJAny92EwbXD93Cip"
+    "TAork0YaEqRESMn+vMH5qslQepsEJ44MkDUh8gNUFKMMBUqhlUJrTTmrOVrQ/QHlAUnY9dBK"
+    "IaTEyIVYxQalYuPP5bun/24hAVht+fiOQxwEIASqtY/IHyJ0PXzHxbcdbr+DxTWzd4KXHzy+"
+    "f3PIZ00QAh3HRGFE5HmEXY+2E/Dma6b/EO1Ac+tFG+eHjdfu4HVs/I6Nb7t4Tpf5uoUbiQRA"
+    "TExN1zf/xsqemJnRLpWcj4pj6i2DJ6s5Gk6qZ6nExNT07sq0/rm5VD5wuAnU/qNUy8DVpddP"
+    "F34Cxl6wxoPFpdYAAAAASUVORK5CYII=",
+    # 32 px
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADV0lEQVR42sWXTWxUVRTHf/e9"
+    "edMpM9CpiQy1FUpaoDSxtCikLkzQmJDQDXtY6AIT4qIhunBpIq6NW1ho4gZcu6kbG4mR1MU0"
+    "s2j9SE35qLYh0A4U2pl3z7ks3psPtTXtlJme5OUm9913z//8z/+ed4+hzvoGR3uBceAMMMyL"
+    "tWlgEvhybub2fGXS1Dl/D/gCyNJcWwGuzM3c/hrAr3P+FZCi+ZYCzr/0cs+d5Qf3p01Me74F"
+    "kW/ExIgX57zVzol9jnux4HbLziQaUXvh+nxD3oYu9f57athjly2xk483iGjbjO2IgQunOjie"
+    "CzieC5rPwOu9acZOdDLyagqYb10Kjna18/FYD28c3otzDhWtvvvwnRyl1acA/PR7EYCrP6wC"
+    "sG5fAIBjXe1c/2CAjkwSY0wEwEprRHj0QDvXLh0ju7cNPwgwnsGpQ0xYXeMnA7xEtMWpniQA"
+    "n7wZ6eHTW+HOAHx0rpt9ewKM7+MFCfyEj1hBVXHNZuDkoTQnD6Ub2nBkf/SDPRIX9z9WGgAw"
+    "9to+nFOcKk4EDS1OBKcOJy3QwHBPKnJsBYnFVy9CP14n5RC1kdwrp0M1Ggc7NWbA2z6A/WmD"
+    "hAKEOOfwRGoARKsAMv3fk9lk48/OxWMjDEhYOcQOp4p6XhWAU21+Cv5aLvFKp4ui9wTjeWAM"
+    "xABWZt9GrUVDQcIQCUNsOUTKlbHM348t4z+3NwYgf3eNXNrgRFHfwxgvuj06InGKoiLRsQwt"
+    "EtpIL1YiYFaYeWQaZ2Dit2e82xfg+VH0/wGgioqisUMJLRKGVeciwo+LbY0DKCxa8vfWONGV"
+    "xHgGY0wtBc7h1KEiOKlFLTETYi0zD2G2uLX/3KZn5Nov6xRXS9hSecOnlu/4ibXwZF345s+t"
+    "X65N3+DoppX1cNZw9a0EmaSpS0HMgiiqUa3QuFg9KSmfF/Zw96m/dQBDp8/m/+9eeDAjXDyy"
+    "zkDW/hOA1sSoIvxaDPh2Icv9teS2uiU/190/AIxutqJY9ri1mGR22UdFSBlLm4sE9+AZ5B8l"
+    "uXmvg+8WO3hs/e2WgRtm6PTZXW1M/KWFuZVcd/8ScL7FAC4XpiYmfYClhbnpXHf/nbhJSbUg"
+    "8suFqYlac1oH4mZdA3mgCe35DeD9wtTEZGXyOQhi4NMF+88LAAAAAElFTkSuQmCC",
+    # 64 px
+    "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",
+)
 VIDEO_TYPES = [
     ("Video", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.wmv *.flv *.ts"),
     ("All files", "*.*"),
@@ -837,6 +904,9 @@ class App:
     def __init__(self, root: tk.Tk, path: str | None = None):
         self.root = root
         root.title("Blurbox")
+        # Kept on self: Tk drops an image once Python frees it
+        self.icons = [tk.PhotoImage(data=png, format="png") for png in ICON_PNGS]
+        root.iconphoto(True, *self.icons)
         root.geometry("1150x900")
         root.minsize(900, 650)
 

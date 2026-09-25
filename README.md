@@ -1,4 +1,4 @@
-# blurbox
+# <img src="https://raw.githubusercontent.com/raffaelemancuso/blurbox/master/docs/logo.png" alt="" width="48" height="48"> blurbox
 
 A small desktop tool to hide parts of a video: draw one or more rectangles on
 the frame and cover each with a black box, a blur or pixelation, all the
