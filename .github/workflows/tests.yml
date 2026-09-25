@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    env:
+      # uv's own Python builds include Tk, which the GUI tests need
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: ffmpeg and a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      - name: Tests (Linux, on the virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a uv run pytest
+      - name: Tests (Windows)
+        if: runner.os == 'Windows'
+        run: uv run pytest
