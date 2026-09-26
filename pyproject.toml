@@ -1,6 +1,6 @@
 [project]
 name = "blurbox"
-version = "0.1.3"
+version = "0.2.0"
 description = "Cover areas of a video with a black box, blur or pixelation: a desktop GUI around ffmpeg"
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,12 @@ authors = [{ name = "Raffaele Mancuso" }]
 requires-python = ">=3.11"
 # Keep in sync with the inline metadata at the top of blurbox.py,
 # which `uv run --script` and the Windows shortcut use
-dependencies = ["av>=18", "pillow>=10"]
+dependencies = [
+    "av>=18",
+    "darkdetect>=0.8",
+    "pillow>=10",
+    "ttkbootstrap>=2.2.3",
+]
 keywords = ["video", "ffmpeg", "blur", "pixelate", "redact", "anonymize", "gui"]
 classifiers = [
     "Development Status :: 4 - Beta",

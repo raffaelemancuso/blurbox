@@ -334,6 +334,25 @@ def test_drag_is_clamped_and_cancel_discards_it(ranged):
     assert ranged.areas[0].ranges == SAVED
 
 
+# Look -----------------------------------------------------------------------
+
+def test_theme_switch_and_render_status(app):
+    for dark in (not app.dark.get(), app.dark.get()):
+        app.dark.set(dark)  # the menu's "Dark theme" and the toolbar button
+        pump(app)
+        assert app.style.theme.name == bb.THEMES[dark]
+        # the hand-drawn canvases follow; the video's surround stays dark
+        assert app.timeline.cget("background") == app.style.colors.bg
+        assert app.canvas.cget("background") == bb.VIDEO_BG
+    assert not app.progress.winfo_ismapped()  # progress and Cancel: only while rendering
+    app._set_busy(True)
+    pump(app)
+    assert app.progress.winfo_ismapped() and app.cancel_btn.winfo_ismapped()
+    app._set_busy(False)
+    pump(app)
+    assert not app.progress.winfo_ismapped() and not app.cancel_btn.winfo_ismapped()
+
+
 # ffmpeg window --------------------------------------------------------------
 
 def test_ffmpeg_window(app):

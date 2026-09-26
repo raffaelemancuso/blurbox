@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["av>=18", "pillow>=10"]
+# dependencies = ["av>=18", "darkdetect>=0.8", "pillow>=10", "ttkbootstrap>=2.2.3"]
 # ///
 """Cover fixed areas of a video with a black box, a blur or pixelation, each
 all the time or only during chosen time ranges. GUI wrapper around
@@ -58,6 +58,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import av
+import darkdetect
+import ttkbootstrap as tb
 from PIL import Image, ImageTk
 
 FFMPEG = shutil.which("ffmpeg")
@@ -70,6 +72,19 @@ REPEAT_DELAY_MS = 400  # hold a step button this long before it repeats
 REPEAT_MS = 50  # then step at most this often (and never before the frame shows)
 GRAB_PX = 7  # how close (screen pixels) to an edge of the selected area resizes it
 MIN_AREA_PX = 2  # smallest width/height (video pixels) a resize can leave
+THEMES = {False: "bootstrap-light", True: "bootstrap-dark"}  # by "dark theme" on/off
+VIDEO_BG = "#18191c"  # around the frame, dark in either theme like a video player's
+SIDEBAR_WRAP = 300  # wrap width (px) of the notes in the sidebar
+SHORTCUTS = [
+    ("← / →", "Back / forward 1 s"),
+    ("Shift+← / Shift+→", "Back / forward 1 frame"),
+    ("I / O", "Current time into Start / End"),
+    ("Enter", "Add the range (Update range while editing)"),
+    ("Esc", "Cancel the range edit"),
+    ("E", "Show effect on/off"),
+    ("Ctrl+O", "Open project"),
+    ("Ctrl+S / Ctrl+Shift+S", "Save project / Save project as"),
+]
 # Mouse cursor per resize handle: l/r = left/right edge, t/b = top/bottom
 RESIZE_CURSORS = {
     "l": "sb_h_double_arrow", "r": "sb_h_double_arrow",
@@ -622,7 +637,8 @@ class Timeline(tk.Canvas):
     DRAG_PX = 3  # movement that turns a click on a range into a drag
 
     def __init__(self, master, app: "App"):
-        super().__init__(master, height=self.HEIGHT, highlightthickness=0)
+        super().__init__(master, height=self.HEIGHT, highlightthickness=0,
+                         background=app.style.colors.bg)
         self.app = app
         # A press on a range: (index, "start"/"end"/"move", press x, range
         # at the press); it becomes a drag once the mouse moves DRAG_PX
@@ -751,31 +767,35 @@ class Timeline(tk.Canvas):
         app = self.app
         if not app.info:
             return
+        c = app.style.colors  # the active theme's, so a theme switch just redraws
         a, b = self._span()
-        self.create_rectangle(a, 9, b, 27, fill="#e4e4e4", outline="#a8a8a8")
+        self.create_rectangle(a, 9, b, 27, fill=c.inputbg, outline=c.border)
         for i, area in enumerate(app.areas):
             if i != app.cur:
                 for s, e in area.ranges or [(0, app.info.duration)]:
                     self.create_rectangle(self.x_of(s), 10, self.x_of(e), 14,
-                                          fill="#8c8c8c", width=0)
+                                          fill=c.secondary, width=0)
         cur = app.current()
         if cur:
+            always = c.make_transparent(0.35, c.danger, c.inputbg)
             for j, (s, e) in enumerate(cur.ranges or [(0, app.info.duration)]):
                 editing = cur.ranges and j == app.editing
                 if editing:  # show the edit in progress, not the saved range
                     s, e = app.pending_range()
                 self.create_rectangle(self.x_of(s), 15, max(self.x_of(e), self.x_of(s) + 2), 26,
-                                      fill="#f2b8ad" if not cur.ranges else "#e0503c",
-                                      outline="#1060d0" if editing else "", width=2 if editing else 0)
+                                      fill=always if not cur.ranges else c.danger,
+                                      outline=c.primary if editing else "",
+                                      width=2 if editing else 0)
         self.draw_playhead()
 
     def draw_playhead(self):
         self.delete("ph")
         if not self.app.info:
             return
+        fg = self.app.style.colors.fg
         x = self.x_of(self.app.pos.get())
-        self.create_line(x, 4, x, 31, fill="#101010", width=2, tags="ph")
-        self.create_polygon(x - 5, 2, x + 5, 2, x, 8, fill="#101010", tags="ph")
+        self.create_line(x, 4, x, 31, fill=fg, width=2, tags="ph")
+        self.create_polygon(x - 5, 2, x + 5, 2, x, 8, fill=fg, tags="ph")
 
 
 class FfmpegWindow(tk.Toplevel):
@@ -799,30 +819,34 @@ class FfmpegWindow(tk.Toplevel):
         self.transient(app.root)
         self.command = ""  # the render command as shell text, for Copy
 
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=6, pady=6)
-        ttk.Label(bar, text="Output container").pack(side="left")
+        bar = tb.Frame(self, padding=(8, 8, 8, 4))
+        bar.pack(fill="x")
+        tb.Label(bar, text="Output container").pack(side="left")
         default = app.default_output().suffix if app.video else ".mp4"
         self.suffix = tk.StringVar(value=".mp4" if default == ".m4v" else default)
-        box = ttk.Combobox(bar, textvariable=self.suffix, values=self.CONTAINERS, width=7,
-                           state="readonly")
+        box = tb.Combobox(bar, textvariable=self.suffix, values=self.CONTAINERS, width=7,
+                          state="readonly")
         box.pack(side="left", padx=(4, 12))
         box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-        ttk.Button(bar, text="Refresh", command=self.refresh).pack(side="left")
-        self.copy_btn = ttk.Button(bar, text="Copy command", command=self.copy)
+        tb.Button(bar, text="Refresh", icon="arrow-clockwise",
+                  command=self.refresh).pack(side="left")
+        self.copy_btn = tb.Button(bar, text="Copy command", icon="copy", bootstyle="primary",
+                                  command=self.copy)
         self.copy_btn.pack(side="left", padx=4)
-        self.note = ttk.Label(bar, text="")
+        self.note = tb.Label(bar, text="", bootstyle="success")
         self.note.pack(side="left", padx=8)
-        ttk.Button(bar, text="Close", command=self.destroy).pack(side="right")
+        tb.Button(bar, text="Close", command=self.destroy).pack(side="right")
 
-        body = ttk.Frame(self)
-        body.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        self.text = tk.Text(body, wrap="word", font="TkFixedFont", padx=8, pady=6)
-        scroll = ttk.Scrollbar(body, command=self.text.yview)
+        body = tb.Frame(self)
+        body.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        self.text = tb.Text(body, wrap="word", font="TkFixedFont", padx=10, pady=8,
+                            relief="flat", highlightthickness=0)
+        scroll = tb.Scrollbar(body, command=self.text.yview)
         self.text.config(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.text.pack(side="left", fill="both", expand=True)
-        self.text.tag_config("head", font=("TkDefaultFont", 10, "bold"))
+        self.text.tag_config("head", font=("TkDefaultFont", 10, "bold"),
+                             foreground=app.style.colors.primary)
         self.bind("<Escape>", lambda e: self.destroy())
         self.refresh()
 
@@ -907,8 +931,11 @@ class App:
         # Kept on self: Tk drops an image once Python frees it
         self.icons = [tk.PhotoImage(data=png, format="png") for png in ICON_PNGS]
         root.iconphoto(True, *self.icons)
-        root.geometry("1150x900")
-        root.minsize(900, 650)
+        root.geometry("1280x860")
+        root.minsize(960, 640)
+        # Light or dark as the system is (darkdetect: None where it cannot tell)
+        self.dark = tk.BooleanVar(value=bool(darkdetect.isDark()))
+        self.style = tb.Style(THEMES[self.dark.get()])
 
         self.video: Path | None = None
         self.info: VideoInfo | None = None
@@ -949,6 +976,7 @@ class App:
         self.status = tk.StringVar(value="Open a video to start.")
 
         self._build()
+        self.dark.trace_add("write", lambda *_: self._set_theme())
         for v in (*self.rect_vars.values(), self.mode, self.strength, self.full):
             v.trace_add("write", lambda *_: self._area_edited())
         self.show_effect.trace_add("write", lambda *_: self.schedule_redraw())
@@ -966,121 +994,159 @@ class App:
     # UI layout ------------------------------------------------------------
 
     def _build(self):
-        pad = {"padx": 4, "pady": 3}
-        top = ttk.Frame(self.root)
-        top.pack(fill="x", **pad)
-        ttk.Button(top, text="Open video…", command=self.choose_video).pack(side="left")
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(top, text="Open project…", command=self.open_project).pack(side="left")
-        ttk.Button(top, text="Save project", command=self.save_project).pack(side="left", padx=2)
-        ttk.Button(top, text="Save project as…",
-                   command=lambda: self.save_project(ask=True)).pack(side="left")
-        self.file_label = ttk.Label(top, text="")
-        self.file_label.pack(side="left", padx=8)
+        r = self.root
+        self.font_head = tb.nametofont("TkDefaultFont").copy()
+        self.font_head.configure(weight="bold")
+        self._build_menu()
 
-        self.canvas = tk.Canvas(self.root, background="#202020", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True, **pad)
+        # Toolbar: files on the left, output on the right
+        top = tb.Frame(r, padding=(8, 6))
+        top.pack(fill="x")
+        for text, icon, command, tip in [
+                ("Open video", "film", self.choose_video, "Open a video to cover"),
+                ("Open project", "folder2-open", self.open_project, "Open a project (Ctrl+O)"),
+                ("Save", "save", self.save_project, "Save the project (Ctrl+S)")]:
+            b = tb.Button(top, text=text, icon=icon, bootstyle="ghost", command=command)
+            b.pack(side="left", padx=(0, 2))
+            tb.ToolTip(b, text=tip)
+        tb.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
+        tb.Checkbutton(top, text="Show effect (E)", variable=self.show_effect,
+                       bootstyle="round-toggle").pack(side="left", padx=4)
+
+        self.render_btn = tb.Button(top, text="Render…", icon="box-arrow-up-right",
+                                    bootstyle="primary", command=self.render)
+        self.render_btn.pack(side="right")
+        tb.ToolTip(self.render_btn, text="Write the covered video with ffmpeg")
+        crf = tb.Spinbox(top, from_=0, to=63, width=4, textvariable=self.crf)
+        crf.pack(side="right", padx=(4, 10))
+        tb.ToolTip(crf, text="CRF: lower = better quality and a bigger file")
+        tb.Label(top, text="Quality").pack(side="right")
+        tb.Separator(top, orient="vertical").pack(side="right", fill="y", padx=8, pady=4)
+        for icon, command, tip in [("terminal", self.show_ffmpeg, "ffmpeg and the render command"),
+                                   ("moon-stars", self._toggle_theme, "Dark theme on/off")]:
+            b = tb.Button(top, icon=icon, icon_only=True, bootstyle="ghost", command=command)
+            b.pack(side="right", padx=(2, 0))
+            tb.ToolTip(b, text=tip)
+        tb.Separator(r).pack(fill="x")
+
+        # Status bar, packed before the body so a small window shrinks the body
+        status = tb.Frame(r, padding=(10, 4))
+        status.pack(side="bottom", fill="x")
+        tb.Label(status, textvariable=self.status).pack(side="left", fill="x", expand=True)
+        self.file_label = tb.Label(status, text="", bootstyle="secondary")
+        self.file_label.pack(side="right")
+        # Shown only while rendering (see _set_busy)
+        self.cancel_btn = tb.Button(status, text="Cancel", icon="x-lg", bootstyle="danger-ghost",
+                                    command=self.cancel, state="disabled")
+        self.progress = tb.Progressbar(status, maximum=100, length=180, bootstyle="striped")
+        tb.Separator(r).pack(side="bottom", fill="x")
+
+        body = tb.Panedwindow(r, orient="horizontal")
+        body.pack(fill="both", expand=True)
+
+        # Left: the frame, and the seek bar under it
+        player = tb.Frame(body)
+        body.add(player, weight=1)
+        self.canvas = tk.Canvas(player, background=VIDEO_BG, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self.render_canvas())
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._motion)
         self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
         self.canvas.bind("<Motion>", self._hover)
 
-        seek = ttk.Frame(self.root)
-        seek.pack(fill="x", **pad)
-        for text, step, frame in [("◀ 1 s", -1, False), ("◀ frame", -1, True),
-                                  ("frame ▶", 1, True), ("1 s ▶", 1, False)]:
-            self._repeat_button(seek, text, lambda s=step, f=frame: self.step(s, f))
+        seek = tb.Frame(player, padding=(6, 6))
+        seek.pack(fill="x")
+        for icon, step, frame, tip in [
+                ("chevron-double-left", -1, False, "Back 1 s (←), hold to repeat"),
+                ("chevron-left", -1, True, "Back 1 frame (Shift+←), hold to repeat"),
+                ("chevron-right", 1, True, "Forward 1 frame (Shift+→), hold to repeat"),
+                ("chevron-double-right", 1, False, "Forward 1 s (→), hold to repeat")]:
+            self._repeat_button(seek, icon, tip, lambda s=step, f=frame: self.step(s, f))
+        # The time first, so a narrow window shrinks the timeline, not it
+        tb.Label(seek, textvariable=self.time_text).pack(side="right")
         self.timeline = Timeline(seek, self)
-        self.timeline.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        ttk.Label(seek, textvariable=self.time_text, width=26, anchor="e").pack(side="left")
+        self.timeline.pack(side="left", fill="x", expand=True, padx=(8, 8))
 
-        opts = ttk.Frame(self.root)
-        opts.pack(fill="x", **pad)
-        ttk.Checkbutton(opts, text="Show effect (E)", variable=self.show_effect).pack(side="left")
-        ttk.Label(opts, text="     Keys: ←/→ 1 s, Shift+←/→ 1 frame, I/O mark start/end, "
-                             "Enter add range, Esc cancel edit").pack(side="left")
+        # Right: the areas and the selected one's settings, scrolling when the
+        # window is too short for them (sized to them at the end of _build)
+        side = tb.ScrolledFrame(body, padding=(14, 10, 14, 10), auto_hide=True)
+        body.add(side.container, weight=0)
 
-        bottom = ttk.Frame(self.root)
-        bottom.pack(fill="x", **pad)
-
-        areas = ttk.LabelFrame(bottom, text="Areas")
-        areas.pack(side="left", fill="y", padx=(0, 6))
-        self.area_list = tk.Listbox(areas, height=7, width=46, exportselection=False)
-        self.area_list.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+        sec = self._section(side, "Areas")
+        self.area_list = tb.Listbox(sec, height=6, exportselection=False, activestyle="none")
+        self.area_list.pack(fill="x")
         self.area_list.bind("<<ListboxSelect>>", self._area_selected)
-        ab = ttk.Frame(areas)
-        ab.pack(fill="x", padx=4, pady=(0, 4))
-        ttk.Button(ab, text="New area", command=self.new_area).pack(side="left")
-        ttk.Button(ab, text="Duplicate", command=self.duplicate_area).pack(side="left", padx=2)
-        ttk.Button(ab, text="Delete", command=self.delete_area).pack(side="left")
+        ab = tb.Frame(sec)
+        ab.pack(fill="x", pady=(6, 0))
+        tb.Button(ab, text="New area", icon="plus-lg", command=self.new_area).pack(side="left")
+        tb.Button(ab, text="Duplicate", icon="files",
+                  command=self.duplicate_area).pack(side="left", padx=4)
+        tb.Button(ab, text="Delete", icon="trash3", bootstyle="danger-outline",
+                  command=self.delete_area).pack(side="right")
 
-        sel = ttk.LabelFrame(bottom, text="Selected area")
-        sel.pack(side="left", fill="both", expand=True)
-        sel.columnconfigure(1, weight=1)
-
-        ttk.Label(sel, text="Position (px)").grid(row=0, column=0, sticky="w", **pad)
-        area = ttk.Frame(sel)
-        area.grid(row=0, column=1, sticky="w")
+        sec = self._section(side, "Selected area")
+        sec.columnconfigure(1, weight=1)
+        pad = {"pady": 3}
+        tb.Label(sec, text="Position (px)").grid(row=0, column=0, sticky="nw", padx=(0, 10), **pad)
+        pos = tb.Frame(sec)
+        pos.grid(row=0, column=1, sticky="w", **pad)
         self.rect_boxes = []
-        for k in "xywh":
-            ttk.Label(area, text=k).pack(side="left", padx=(8, 2))
-            box = ttk.Spinbox(area, from_=0, to=99999, width=6, textvariable=self.rect_vars[k])
-            box.pack(side="left")
+        for i, k in enumerate("xywh"):
+            tb.Label(pos, text=k.upper()).grid(row=i // 2, column=(i % 2) * 2, sticky="e",
+                                               padx=(0 if i % 2 == 0 else 12, 4), pady=2)
+            box = tb.Spinbox(pos, from_=0, to=99999, width=6, textvariable=self.rect_vars[k])
+            box.grid(row=i // 2, column=(i % 2) * 2 + 1, pady=2)
             self.rect_boxes.append(box)
-        ttk.Checkbutton(area, text="Whole frame", variable=self.full).pack(side="left", padx=(14, 0))
+        tb.Checkbutton(sec, text="Whole frame", variable=self.full,
+                       bootstyle="round-toggle").grid(row=1, column=1, sticky="w", **pad)
 
-        ttk.Label(sel, text="Effect").grid(row=1, column=0, sticky="w", **pad)
-        eff = ttk.Frame(sel)
-        eff.grid(row=1, column=1, sticky="w")
+        tb.Label(sec, text="Effect").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=(10, 3))
+        eff = tb.Frame(sec)
+        eff.grid(row=2, column=1, sticky="w", pady=(10, 3))
+        icons = {"black": "square-fill", "blur": "droplet-half", "pixelate": "grid-3x3-gap-fill"}
         for value, label in MODES.items():
-            ttk.Radiobutton(eff, text=label, value=value, variable=self.mode).pack(side="left", padx=4)
-        self.strength_label = ttk.Label(eff, text="")
-        self.strength_label.pack(side="left", padx=(16, 2))
-        self.strength_box = ttk.Spinbox(eff, from_=1, to=200, width=5, textvariable=self.strength)
-        self.strength_box.pack(side="left")
+            tb.Radiobutton(eff, text=label, value=value, variable=self.mode, icon=icons[value],
+                           bootstyle="primary-outline-toolbutton").pack(side="left")
+        self.strength_label = tb.Label(sec, text="")
+        self.strength_label.grid(row=3, column=0, sticky="w", padx=(0, 10), **pad)
+        self.strength_box = tb.Spinbox(sec, from_=1, to=200, width=6, textvariable=self.strength)
+        self.strength_box.grid(row=3, column=1, sticky="w", **pad)
 
-        ttk.Label(sel, text="Time ranges").grid(row=2, column=0, sticky="nw", **pad)
-        tr = ttk.Frame(sel)
-        tr.grid(row=2, column=1, sticky="w")
-        row = ttk.Frame(tr)
-        row.pack(fill="x")
-        for label, var, key in [("Start", self.start_text, "I"), ("End", self.end_text, "O")]:
-            ttk.Label(row, text=label).pack(side="left", padx=(0, 2))
-            entry = ttk.Entry(row, textvariable=var, width=12)
-            entry.pack(side="left")
+        sec = self._section(side, "Time ranges")
+        sec.columnconfigure(1, weight=1)
+        for i, (label, var, key) in enumerate([("Start", self.start_text, "I"),
+                                               ("End", self.end_text, "O")]):
+            tb.Label(sec, text=label).grid(row=i, column=0, sticky="w", padx=(0, 10), pady=2)
+            entry = tb.Entry(sec, textvariable=var, width=12)
+            entry.grid(row=i, column=1, sticky="ew", pady=2)
             entry.bind("<Return>", lambda e: self.add_range())
-            ttk.Button(row, text=f"← current ({key})", width=14,
-                       command=lambda v=var: self.mark(v)).pack(side="left", padx=(2, 10))
-        self.add_btn = ttk.Button(row, text="Add range", width=13, command=self.add_range)
+            b = tb.Button(sec, text=f"Current ({key})", icon="geo-alt", bootstyle="ghost",
+                          command=lambda v=var: self.mark(v))
+            b.grid(row=i, column=2, sticky="ew", padx=(4, 0), pady=2)
+            tb.ToolTip(b, text=f"Put the current time in {label} ({key})")
+        row = tb.Frame(sec)
+        row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 6))
+        self.add_btn = tb.Button(row, text="Add range", icon="plus-lg", bootstyle="primary",
+                                 command=self.add_range)
         self.add_btn.pack(side="left")
         # Shown only while a range is being edited (see _show_editing)
-        self.cancel_edit_btn = ttk.Button(row, text="Cancel", command=self.cancel_edit)
-        ttk.Button(row, text="Remove", command=self.remove_range).pack(side="left", padx=4)
-        row2 = ttk.Frame(tr)
-        row2.pack(fill="x", pady=(3, 0))
-        self.range_list = tk.Listbox(row2, height=4, width=34, exportselection=False)
-        self.range_list.pack(side="left")
+        self.cancel_edit_btn = tb.Button(row, text="Cancel", command=self.cancel_edit)
+        tb.Button(row, text="Remove", icon="trash3", bootstyle="danger-outline",
+                  command=self.remove_range).pack(side="right")
+        self.range_list = tb.Listbox(sec, height=4, exportselection=False, activestyle="none")
+        self.range_list.grid(row=3, column=0, columnspan=3, sticky="ew")
         self.range_list.bind("<<ListboxSelect>>", self._range_selected)
         self.range_list.bind("<Double-Button-1>", lambda e: self.edit_range())
-        ttk.Label(row2, text="  No ranges = always (start to end).\n  Double-click a range to edit it.\n"
-                             "  Times: seconds, m:ss or h:mm:ss.fff").pack(side="left", anchor="n")
+        tb.Label(sec, text="No ranges = always (start to end). Double-click a range, here or on "
+                           "the timeline, to edit it. Times: seconds, m:ss or h:mm:ss.fff",
+                 bootstyle="secondary", wraplength=SIDEBAR_WRAP, justify="left",
+                 ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        side.update_idletasks()
+        side.container.config(width=side.winfo_reqwidth() + side._vbar.winfo_reqwidth())
 
-        act = ttk.Frame(self.root)
-        act.pack(fill="x", **pad)
-        ttk.Label(act, text="Quality (CRF, lower = better)").pack(side="left", padx=(0, 2))
-        ttk.Spinbox(act, from_=0, to=63, width=4, textvariable=self.crf).pack(side="left")
-        self.render_btn = ttk.Button(act, text="Render…", command=self.render)
-        self.render_btn.pack(side="left", padx=(12, 4))
-        self.cancel_btn = ttk.Button(act, text="Cancel", command=self.cancel, state="disabled")
-        self.cancel_btn.pack(side="left")
-        ttk.Button(act, text="ffmpeg…", command=self.show_ffmpeg).pack(side="left", padx=(4, 0))
-        self.progress = ttk.Progressbar(act, maximum=100, length=200)
-        self.progress.pack(side="left", padx=8)
-        ttk.Label(act, textvariable=self.status).pack(side="left", fill="x", expand=True)
-
-        r = self.root
         r.bind("<Control-s>", lambda e: self.save_project())
+        r.bind("<Control-S>", lambda e: self.save_project(ask=True))
         r.bind("<Control-o>", lambda e: self.open_project())
         for key, step in [("Left", -1), ("Right", 1)]:
             r.bind(f"<{key}>", lambda e, s=step: self._key(e, lambda: self.step(s), arrows=True))
@@ -1094,12 +1160,74 @@ class App:
         r.bind("<Return>", lambda e: self._key(e, self.add_range))
         r.bind("<Escape>", lambda e: self.cancel_edit())
         self._mode_changed()
+        self._theme_colors()
 
-    def _repeat_button(self, parent, text: str, action):
+    def _build_menu(self):
+        menu = tb.Menu(self.root)
+        file = tb.Menu(menu, tearoff=False)
+        file.add_command(label="Open video…", command=self.choose_video)
+        file.add_command(label="Open project…", accelerator="Ctrl+O", command=self.open_project)
+        file.add_command(label="Save project", accelerator="Ctrl+S", command=self.save_project)
+        file.add_command(label="Save project as…", accelerator="Ctrl+Shift+S",
+                         command=lambda: self.save_project(ask=True))
+        file.add_separator()
+        file.add_command(label="Render…", command=self.render)
+        file.add_separator()
+        file.add_command(label="Quit", command=self.close)
+        menu.add_cascade(label="File", menu=file)
+        area = tb.Menu(menu, tearoff=False)
+        area.add_command(label="New area", command=self.new_area)
+        area.add_command(label="Duplicate", command=self.duplicate_area)
+        area.add_command(label="Delete", command=self.delete_area)
+        menu.add_cascade(label="Area", menu=area)
+        view = tb.Menu(menu, tearoff=False)
+        view.add_checkbutton(label="Show effect", accelerator="E", variable=self.show_effect)
+        view.add_checkbutton(label="Dark theme", variable=self.dark)
+        menu.add_cascade(label="View", menu=view)
+        tools = tb.Menu(menu, tearoff=False)
+        tools.add_command(label="ffmpeg…", command=self.show_ffmpeg)
+        menu.add_cascade(label="Tools", menu=tools)
+        helpm = tb.Menu(menu, tearoff=False)
+        helpm.add_command(label="Keyboard shortcuts", command=self.show_shortcuts)
+        menu.add_cascade(label="Help", menu=helpm)
+        self.root.config(menu=menu)
+
+    def _section(self, parent, title: str) -> tb.Frame:
+        """A titled group of the sidebar; widgets go into the frame returned."""
+        tb.Label(parent, text=title, font=self.font_head).pack(anchor="w")
+        tb.Separator(parent).pack(fill="x", pady=(3, 8))
+        frame = tb.Frame(parent)
+        frame.pack(fill="x", pady=(0, 16))
+        return frame
+
+    def _toggle_theme(self):
+        self.dark.set(not self.dark.get())
+
+    def _set_theme(self):
+        self.style.theme_use(THEMES[self.dark.get()])
+        self._theme_colors()
+
+    def _theme_colors(self):
+        """Colours the theme does not set, or would set otherwise: a theme
+        switch repaints the plain Tk widgets, so this runs after each."""
+        c = self.style.colors
+        self.canvas.config(background=VIDEO_BG)
+        self.timeline.config(background=c.bg)
+        for lb in (self.area_list, self.range_list):
+            lb.config(selectbackground=c.primary, selectforeground=c.selectfg)
+        self.timeline.redraw()
+
+    def show_shortcuts(self):
+        width = max(len(k) for k, _ in SHORTCUTS)
+        messagebox.showinfo("Keyboard shortcuts",
+                            "\n".join(f"{k:<{width}}   {what}" for k, what in SHORTCUTS))
+
+    def _repeat_button(self, parent, icon: str, tip: str, action):
         """A button that acts on press and, held down, repeats after a delay.
         Each repeat waits for the previous frame to be on screen."""
-        b = ttk.Button(parent, text=text, width=8)
-        b.pack(side="left", padx=(0, 2))
+        b = tb.Button(parent, icon=icon, icon_only=True, bootstyle="ghost")
+        b.pack(side="left")
+        tb.ToolTip(b, text=tip)
 
         def tick():
             if self.shown_gen == self.gen:
@@ -1836,6 +1964,13 @@ class App:
     def _set_busy(self, busy: bool):
         self.render_btn.config(state="disabled" if busy else "normal")
         self.cancel_btn.config(state="normal" if busy else "disabled")
+        # Progress and Cancel sit in the status bar only while rendering
+        if busy:
+            self.progress.pack(side="left", padx=(8, 4), before=self.file_label)
+            self.cancel_btn.pack(side="left", padx=(0, 12), before=self.file_label)
+        else:
+            self.progress.pack_forget()
+            self.cancel_btn.pack_forget()
 
     # Events from worker threads (Tk may only be touched from this thread) --
 

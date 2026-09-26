@@ -73,6 +73,12 @@ shortcut stores absolute paths.
 
 ## Using it
 
+- **Layout**: the frame and its timeline on the left, the areas and the
+  selected one's settings in the sidebar on the right (drag the divider to
+  resize it), files, quality and Render in the toolbar, messages in the
+  status bar. The theme is light or dark as the system is; the moon
+  button or View → Dark theme switches it. Help → Keyboard shortcuts lists
+  the keys.
 - **Areas**: drag on the frame to draw the selected area, drag inside any
   area to select and move it, drag an edge or corner of the selected area
   (it shows white handles) to resize it, "New area" to add another. The
@@ -94,8 +100,8 @@ shortcut stores absolute paths.
   only seeks.
 - **Show effect** (E) draws every active area's effect on the frame, using
   the same ffmpeg filters as the render.
-- **Projects**: Ctrl+S saves the areas, quality and position as JSON,
-  Ctrl+O opens a project. The video is found relative to the project file
+- **Projects**: Ctrl+S saves the areas, quality and position as JSON
+  (Ctrl+Shift+S under a new name), Ctrl+O opens a project. The video is found relative to the project file
   first, so a folder with both can be moved to another PC.
 
 ## Output
