@@ -3,3 +3,6 @@
 __pycache__/
 .venv/
 .pytest_cache/
+
+# Big Buck Bunny clip for tools/make_screenshot.py; made as its docstring says
+docs/bbb_clip.mp4

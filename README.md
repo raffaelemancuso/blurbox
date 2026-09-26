@@ -125,6 +125,9 @@ uv run pytest      # the test suite, about 20 s
 `pyproject.toml` repeats the dependencies of the script's inline metadata
 (which `uv run --script` and the shortcut use); keep the two in sync.
 
+`tools/make_screenshot.py` retakes `docs/screenshot.png` after a change to
+the interface; its docstring says how to make the clip it needs.
+
 The tests are in three files:
 
 - `tests/test_logic.py`: time parsing, areas, filtergraphs and the stream
