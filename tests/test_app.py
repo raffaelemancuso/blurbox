@@ -444,3 +444,67 @@ def test_render_refuses_undrawn_areas(app, dialogs):
     app.new_area()
     app.render()
     assert dialogs["errors"] == ["Area 1 has not been drawn: draw or delete it."]
+
+
+# Zoom and pan ---------------------------------------------------------------
+
+def under(app, x, y):
+    """The video point under canvas point x, y."""
+    return (x - app.offx) / app.scale, (y - app.offy) / app.scale
+
+
+def wheel(app, x, y, notches):
+    app.canvas.event_generate("<MouseWheel>", x=x, y=y, delta=120 * notches)
+    pump(app)
+
+
+def pan(app, button, start, end):
+    (a, b), (c, d) = start, end
+    app.canvas.event_generate(f"<ButtonPress-{button}>", x=a, y=b)
+    app.canvas.event_generate(f"<B{button}-Motion>", x=c, y=d)
+    app.canvas.event_generate(f"<ButtonRelease-{button}>", x=c, y=d)
+    pump(app)
+
+
+def test_zoom_around_the_pointer(app):
+    fit = app.scale
+    assert app.zoom is None and app.zoom_text.get() == f"{fit * 100:.0f}%"
+    x, y = to_canvas(app, 80, 60)
+    wheel(app, x, y, 2)
+    assert app.scale == pytest.approx(fit * bb.ZOOM_STEP ** 2)
+    assert under(app, x, y) == pytest.approx((80, 60), abs=0.5)  # stayed under the pointer
+    assert "right or middle button" in app.status.get()
+    # Only the part in view is scaled, not the whole enlarged frame
+    assert app.photo.width() <= app.canvas.winfo_width()
+    assert app.photo.height() <= app.canvas.winfo_height()
+    drag(app, (70, 50), (90, 70))  # areas are still drawn in video pixels
+    assert rect(app) == pytest.approx((70, 50, 20, 20), abs=1)
+    wheel(app, x, y, -20)  # the 320×240 video is smaller than the window: down to 100%
+    assert app.scale == 1.0
+    key(app, "Key-0")
+    assert app.zoom is None and app.scale == pytest.approx(fit)
+    key(app, "Key-1")
+    assert app.scale == 1.0
+    key(app, "Key-plus")
+    assert app.scale == pytest.approx(bb.ZOOM_STEP)
+    wheel(app, x, y, 40)
+    assert app.scale == bb.MAX_ZOOM_PX
+
+
+def test_pan_with_the_right_or_middle_button(app):
+    app.zoom_to(4.0)  # 1280×960 px: bigger than the canvas both ways
+    pump(app)
+    x, y = app.canvas.winfo_width() // 2, app.canvas.winfo_height() // 2
+    for button in (3, 2):
+        point = under(app, x, y)
+        pan(app, button, (x, y), (x + 40, y + 30))
+        assert under(app, x + 40, y + 30) == pytest.approx(point)  # the frame followed
+    assert app.areas == []  # panning draws nothing
+    pan(app, 3, (x, y), (x + 5000, y + 5000))  # far past the top-left corner: stops there
+    assert (app.offx, app.offy) == (0, 0)
+    pan(app, 3, (x, y), (x - 10, y - 10))  # and moves back at once
+    assert (app.offx, app.offy) == (-10, -10)
+    key(app, "Key-0")
+    pan(app, 3, (x, y), (x + 40, y + 30))  # the whole frame is in view: nothing to pan
+    centre = app.canvas.winfo_width() / 2, app.canvas.winfo_height() / 2
+    assert app.zoom is None and under(app, *centre) == pytest.approx((160, 120))

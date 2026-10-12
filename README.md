@@ -75,7 +75,7 @@ shortcut stores absolute paths.
 
 - **Layout**: the frame and its timeline on the left, the areas and the
   selected one's settings in the sidebar on the right (drag the divider to
-  resize it), files, quality and Render in the toolbar, messages in the
+  resize it), files, zoom, quality and Render in the toolbar, messages in the
   status bar. The theme is light or dark as the system is; the moon
   button or View → Dark theme switches it. Help → Keyboard shortcuts lists
   the keys.
@@ -88,6 +88,12 @@ shortcut stores absolute paths.
 - **Whole frame**: tick it to make the selected area cover the entire
   picture (e.g. blur everything from 0:12 to 0:15); untick it to get its
   rectangle back.
+- **Zoom**: the mouse wheel zooms in and out around the pointer; + and −
+  (or the toolbar's magnifiers) zoom around the centre, 0 fits the frame to
+  the window and 1 shows it at actual size (100 %). Drag with the right or
+  middle mouse button to move around the zoomed frame. From 200 % up the
+  video's pixels show as sharp squares, so an edge can be placed on the
+  exact pixel.
 - **Seeking**: click or drag the timeline, use the step buttons (hold them
   to repeat), or the keys ←/→ (1 s) and Shift+←/→ (one frame).
 - **Time ranges**: I and O put the current time in Start and End, Enter adds

@@ -16,6 +16,10 @@ select and move it, drag an edge or corner of the selected area to resize
 it; "New area" adds another. Each area has its own effect and time ranges
 (none = always).
 
+Zoom: the mouse wheel zooms in and out around the pointer, + and - around
+the centre; 0 fits the frame to the window, 1 shows it at actual size.
+Drag with the right or middle button to move around the zoomed frame.
+
 Seeking: the timeline (click or drag), the step buttons (hold to repeat) or
 the keyboard: Left/Right 1 s, Shift+Left/Right one frame.
 
@@ -41,6 +45,7 @@ file first, then by its absolute path.
 import copy
 import functools
 import json
+import math
 import os
 import queue
 import re
@@ -72,6 +77,9 @@ REPEAT_DELAY_MS = 400  # hold a step button this long before it repeats
 REPEAT_MS = 50  # then step at most this often (and never before the frame shows)
 GRAB_PX = 7  # how close (screen pixels) to an edge of the selected area resizes it
 MIN_AREA_PX = 2  # smallest width/height (video pixels) a resize can leave
+ZOOM_STEP = 1.25  # zoom factor per wheel notch or +/- press
+MAX_ZOOM_PX = 32  # zoom in up to this many screen pixels per video pixel
+SHARP_ZOOM = 2  # zoomed in this far, show the video's pixels as sharp squares
 THEMES = {False: "bootstrap-light", True: "bootstrap-dark"}  # by "dark theme" on/off
 VIDEO_BG = "#18191c"  # around the frame, dark in either theme like a video player's
 SIDEBAR_WRAP = 300  # wrap width (px) of the notes in the sidebar
@@ -82,6 +90,8 @@ SHORTCUTS = [
     ("Enter", "Add the range (Update range while editing)"),
     ("Esc", "Cancel the range edit"),
     ("E", "Show effect on/off"),
+    ("+ / -", "Zoom in / out (also the mouse wheel)"),
+    ("0 / 1", "Fit the frame to the window / actual size"),
     ("Ctrl+O", "Open project"),
     ("Ctrl+S / Ctrl+Shift+S", "Save project / Save project as"),
 ]
@@ -947,6 +957,10 @@ class App:
         self.frame: Image.Image | None = None
         self.photo = None
         self.scale, self.offx, self.offy = 1.0, 0, 0
+        self.zoom: float | None = None  # screen px per video px; None = fit the canvas
+        self.center: tuple[float, float] | None = None  # video point at the canvas centre
+        self.pan: tuple[int, int] | None = None  # pointer during a right/middle drag
+        self.preview = None  # (frame, areas, image): the last effect preview, reused
         self.gen = 0  # number of the latest frame request
         self.shown_gen = 0  # request whose frame is on screen
         self.shown_time: float | None = None
@@ -965,6 +979,7 @@ class App:
 
         self.pos = tk.DoubleVar(value=0)
         self.time_text = tk.StringVar(value="")
+        self.zoom_text = tk.StringVar(value="")
         self.rect_vars = {k: tk.StringVar(value="0") for k in "xywh"}
         self.mode = tk.StringVar(value="black")
         self.strength = tk.StringVar(value="20")
@@ -1012,6 +1027,17 @@ class App:
         tb.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
         tb.Checkbutton(top, text="Show effect (E)", variable=self.show_effect,
                        bootstyle="round-toggle").pack(side="left", padx=4)
+        tb.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8, pady=4)
+        for icon, command, tip in [
+                ("zoom-out", lambda: self.zoom_by(1 / ZOOM_STEP), "Zoom out (-, or the wheel)"),
+                (None, None, ("Zoom (100% = actual size): drag with the right or middle "
+                              "button to move around the zoomed frame")),
+                ("zoom-in", lambda: self.zoom_by(ZOOM_STEP), "Zoom in (+, or the wheel)"),
+                ("aspect-ratio", lambda: self.zoom_to(None), "Fit the frame to the window (0)")]:
+            w = (tb.Label(top, textvariable=self.zoom_text, width=5, anchor="center") if icon is None
+                 else tb.Button(top, icon=icon, icon_only=True, bootstyle="ghost", command=command))
+            w.pack(side="left")
+            tb.ToolTip(w, text=tip)
 
         self.render_btn = tb.Button(top, text="Render…", icon="box-arrow-up-right",
                                     bootstyle="primary", command=self.render)
@@ -1054,6 +1080,13 @@ class App:
         self.canvas.bind("<B1-Motion>", self._motion)
         self.canvas.bind("<ButtonRelease-1>", lambda e: setattr(self, "drag", None))
         self.canvas.bind("<Motion>", self._hover)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        for button in (4, 5):  # the wheel on X11 with Tk 8.6
+            self.canvas.bind(f"<ButtonPress-{button}>", self._wheel)
+        for button in (2, 3):  # left drag draws areas, so middle and right pan
+            self.canvas.bind(f"<ButtonPress-{button}>", self._pan_press)
+            self.canvas.bind(f"<B{button}-Motion>", self._pan_motion)
+            self.canvas.bind(f"<ButtonRelease-{button}>", self._pan_release)
 
         seek = tb.Frame(player, padding=(6, 6))
         seek.pack(fill="x")
@@ -1157,6 +1190,12 @@ class App:
                             ("e", lambda: self.show_effect.set(not self.show_effect.get()))]:
             r.bind(f"<Key-{key}>", lambda e, a=action: self._key(e, a))
             r.bind(f"<Key-{key.upper()}>", lambda e, a=action: self._key(e, a))
+        for keys, action in [(("plus", "equal", "KP_Add"), lambda: self.zoom_by(ZOOM_STEP)),
+                             (("minus", "KP_Subtract"), lambda: self.zoom_by(1 / ZOOM_STEP)),
+                             (("0",), lambda: self.zoom_to(None)),
+                             (("1",), lambda: self.zoom_to(1.0))]:
+            for key in keys:
+                r.bind(f"<Key-{key}>", lambda e, a=action: self._key(e, a))
         r.bind("<Return>", lambda e: self._key(e, self.add_range))
         r.bind("<Escape>", lambda e: self.cancel_edit())
         self._mode_changed()
@@ -1183,6 +1222,12 @@ class App:
         view = tb.Menu(menu, tearoff=False)
         view.add_checkbutton(label="Show effect", accelerator="E", variable=self.show_effect)
         view.add_checkbutton(label="Dark theme", variable=self.dark)
+        view.add_separator()
+        view.add_command(label="Zoom in", accelerator="+", command=lambda: self.zoom_by(ZOOM_STEP))
+        view.add_command(label="Zoom out", accelerator="-",
+                         command=lambda: self.zoom_by(1 / ZOOM_STEP))
+        view.add_command(label="Fit to window", accelerator="0", command=lambda: self.zoom_to(None))
+        view.add_command(label="Actual size", accelerator="1", command=lambda: self.zoom_to(1.0))
         menu.add_cascade(label="View", menu=view)
         tools = tb.Menu(menu, tearoff=False)
         tools.add_command(label="ffmpeg…", command=self.show_ffmpeg)
@@ -1278,6 +1323,8 @@ class App:
         self.video, self.info = Path(path), info
         self.project = None
         self.frame = None
+        self.preview = None
+        self.zoom, self.center = None, None
         self.shown_time = None
         self.cancel_edit()
         self.areas, self.cur = [], None
@@ -1485,23 +1532,66 @@ class App:
             return
         if self.frame is None:
             return
-        img = self.frame
-        if self.show_effect.get():
-            t = self.shown_time if self.shown_time is not None else self.pos.get()
-            try:
-                img = apply_effects(img, self._active_items(t))
-            except Exception as e:
-                self.status.set(f"Preview error: {e}")
-        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        iw, ih = img.size
-        s = min(cw / iw, ch / ih)
-        size = (max(1, int(iw * s)), max(1, int(ih * s)))
-        self.photo = ImageTk.PhotoImage(img.resize(size, Image.Resampling.BILINEAR))
-        self.scale = size[0] / iw
-        self.offx, self.offy = (cw - size[0]) // 2, (ch - size[1]) // 2
-        self.canvas.create_image(self.offx, self.offy, anchor="nw", image=self.photo, tags="img")
-        self.canvas.tag_lower("img")
+        img = self._preview_image()
+        self._layout()
+        self.zoom_text.set(f"{self.scale * 100:.0f}%")
+        # Scale only the part of the frame in view, so a deep zoom costs no
+        # more than the fit
+        s, (iw, ih) = self.scale, img.size
+        x0, y0 = max(0, round(self.offx)), max(0, round(self.offy))
+        x1 = min(self.canvas.winfo_width(), round(self.offx + iw * s))
+        y1 = min(self.canvas.winfo_height(), round(self.offy + ih * s))
+        if x1 > x0 and y1 > y0:
+            box = (max(0.0, (x0 - self.offx) / s), max(0.0, (y0 - self.offy) / s),
+                   min(iw, (x1 - self.offx) / s), min(ih, (y1 - self.offy) / s))
+            sharp = self.zoom is not None and s >= SHARP_ZOOM
+            resample = Image.Resampling.NEAREST if sharp else Image.Resampling.BILINEAR
+            self.photo = ImageTk.PhotoImage(img.resize((x1 - x0, y1 - y0), resample, box=box))
+            self.canvas.create_image(x0, y0, anchor="nw", image=self.photo, tags="img")
+            self.canvas.tag_lower("img")
         self.draw_areas()
+
+    def _preview_image(self) -> Image.Image:
+        """The frame, with the active areas' effects when they are shown. The
+        result is kept, so zooming and panning do not run the filters again."""
+        if not self.show_effect.get():
+            return self.frame
+        t = self.shown_time if self.shown_time is not None else self.pos.get()
+        items = self._active_items(t)
+        key = [(a.mode, a.strength, rect) for a, rect in items]
+        if self.preview and self.preview[0] is self.frame and self.preview[1] == key:
+            return self.preview[2]
+        try:
+            img = apply_effects(self.frame, items)
+        except Exception as e:
+            self.status.set(f"Preview error: {e}")
+            return self.frame
+        self.preview = (self.frame, key, img)
+        return img
+
+    def _fit_scale(self) -> float:
+        iw, ih = self.frame.size
+        return min(self.canvas.winfo_width() / iw, self.canvas.winfo_height() / ih)
+
+    def _layout(self):
+        """Set the frame's scale and offset on the canvas from the zoom and
+        the view centre. Along each axis the frame is centred while it is
+        smaller than the canvas, and otherwise leaves no empty band."""
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        iw, ih = self.frame.size
+        fit = self._fit_scale()
+        s = fit if self.zoom is None else min(max(self.zoom, min(fit, 1.0)), max(fit, MAX_ZOOM_PX))
+        cx, cy = self.center or (iw / 2, ih / 2)
+
+        def offset(c, view, size):
+            if size * s <= view:
+                return (view - size * s) / 2
+            return min(0.0, max(view - size * s, view / 2 - c * s))
+
+        self.scale = s
+        self.offx, self.offy = offset(cx, cw, iw), offset(cy, ch, ih)
+        # Keep the centre as clamped, so a pan past an edge leaves nothing to undo
+        self.center = ((cw / 2 - self.offx) / s, (ch / 2 - self.offy) / s)
 
     def draw_areas(self):
         """Outlines: the selected area red, the others yellow; thin and marked
@@ -1540,6 +1630,66 @@ class App:
                                (c[2], c[3]), (mx, c[3]), (c[0], c[3]), (c[0], my)]:
                     self.canvas.create_rectangle(hx - 4, hy - 4, hx + 4, hy + 4, fill="white",
                                                  outline="black", tags="rect")
+
+    # Zoom and pan ---------------------------------------------------------
+
+    def zoom_to(self, scale: float | None, at: tuple[float, float] | None = None):
+        """Show the frame at `scale` screen pixels per video pixel, or fitting
+        the canvas (None), keeping the video point under canvas point `at`
+        (default: the centre) where it is. The zoom goes from the fit or the
+        actual size, whichever is smaller, up to MAX_ZOOM_PX."""
+        if self.frame is None:
+            return
+        self._layout()  # the current view, even if not redrawn yet
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        ax, ay = at or (cw / 2, ch / 2)
+        vx, vy = (ax - self.offx) / self.scale, (ay - self.offy) / self.scale
+        fit = self._fit_scale()
+        if scale is not None:
+            scale = min(max(scale, min(fit, 1.0)), max(fit, MAX_ZOOM_PX))
+            if math.isclose(scale, fit):
+                scale = None  # back at the fit, which follows the window's size
+        if self.zoom is None and scale is not None and scale > fit:
+            self.status.set("Zoomed in: drag with the right or middle button to move around, "
+                            "0 fits the frame again.")
+        self.zoom = scale
+        s = fit if scale is None else scale
+        self.center = (vx + (cw / 2 - ax) / s, vy + (ch / 2 - ay) / s)
+        self._layout()
+        self.schedule_redraw()
+
+    def zoom_by(self, factor: float, at: tuple[float, float] | None = None):
+        if self.frame is not None:
+            self._layout()
+            self.zoom_to(self.scale * factor, at)
+
+    def _wheel(self, e):
+        """The wheel zooms in (up) or out (down) around the pointer."""
+        if e.num in (4, 5):
+            notches = 1 if e.num == 4 else -1
+        else:  # 120 per notch; touchpads send fractions of it
+            notches = e.delta / 120
+        self.zoom_by(ZOOM_STEP ** notches, (e.x, e.y))
+
+    def _pan_press(self, e):
+        if self.frame is not None and not self.loading:
+            self.pan = (e.x, e.y)
+            self.canvas.config(cursor="fleur")
+
+    def _pan_motion(self, e):
+        """Drag the frame along with the pointer."""
+        if self.pan is None:
+            return
+        self._layout()
+        (px, py), (cx, cy) = self.pan, self.center
+        self.center = (cx - (e.x - px) / self.scale, cy - (e.y - py) / self.scale)
+        self.pan = (e.x, e.y)
+        self._layout()
+        self.schedule_redraw()
+
+    def _pan_release(self, e):
+        self.pan = None
+        self._hover(e)
 
     # Areas ----------------------------------------------------------------
 
